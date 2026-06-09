@@ -152,6 +152,7 @@
                    :aspect-ratio-penalty
                    :center-balance-penalty
                    :crossing-penalty
+                   :wiring-overlap-balance-penalty
                    :total]))))
 
   (testing "stress energy refinement does not increase total energy"
@@ -167,6 +168,21 @@
           base-energy (get-in base [:metrics :stress-energy :total])
           refined-energy (get-in refined [:metrics :stress-energy :total])]
       (is (<= refined-energy base-energy))))
+
+  (testing "stress wiring target prefers overlap spread across route lanes"
+    (let [ids [:a :b :c :d]
+          edges [[:a :b] [:c :d]]
+          concentrated-grid {:a [0 0] :b [2 0]
+                             :c [0 0] :d [2 0]}
+          distributed-grid {:a [0 0] :b [2 0]
+                            :c [0 1] :d [2 1]}
+          concentrated (layout/wiring-overlap-balance-penalty
+                        ids edges concentrated-grid)
+          distributed (layout/wiring-overlap-balance-penalty
+                       ids edges distributed-grid)]
+      (is (pos? concentrated))
+      (is (zero? distributed))
+      (is (< distributed concentrated))))
 
   (testing "stress node spacing expands the automatic grid"
     (let [edges [[:a :b] [:b :c] [:c :d] [:d :e] [:e :f]]

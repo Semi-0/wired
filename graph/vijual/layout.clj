@@ -541,7 +541,8 @@
    :edge-length-variance-penalty 0.5
    :aspect-ratio-penalty 20.0
    :center-balance-penalty 10.0
-   :crossing-penalty 8.0})
+   :crossing-penalty 8.0
+   :wiring-overlap-balance-penalty 3.0})
 
 (defn stress-energy-weights [opts]
   (merge default-stress-energy-weights (:stress-energy-weights opts)))
@@ -644,6 +645,29 @@
                                              (grid c) (grid d)))]
       [left-index right-index]))))
 
+(declare route-logical-points segment-records lane-segment)
+
+(defn stress-logical-routes [edges grid]
+  (map-indexed (fn [index [a b]]
+                 {:id index
+                  :source a
+                  :dest b
+                  :logical-points (route-logical-points (grid a) (grid b))})
+               (distinct edges)))
+
+(defn wiring-lane-loads [edges grid]
+  (frequencies
+   (map (juxt :axis :lane)
+        (keep lane-segment
+              (segment-records (stress-logical-routes edges grid))))))
+
+(defn wiring-overlap-balance-penalty [_ids edges grid]
+  (reduce + 0.0
+          (map (fn [load]
+                 (let [extra (max 0 (dec load))]
+                   (* extra extra)))
+               (vals (wiring-lane-loads edges grid)))))
+
 (defn weighted-stress-energy-total [components opts]
   (let [weights (stress-energy-weights opts)]
     (reduce-kv (fn [total component value]
@@ -661,7 +685,9 @@
                     :aspect-ratio-penalty (aspect-ratio-penalty ids grid opts)
                     :center-balance-penalty
                     (center-balance-penalty ids grid grid-size)
-                    :crossing-penalty (crossing-penalty ids edges grid)}]
+                    :crossing-penalty (crossing-penalty ids edges grid)
+                    :wiring-overlap-balance-penalty
+                    (wiring-overlap-balance-penalty ids edges grid)}]
     (assoc components :total (weighted-stress-energy-total components opts))))
 
 (defn stress-refine-iterations [node-count requested]
