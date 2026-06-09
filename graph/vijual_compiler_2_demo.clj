@@ -21,9 +21,9 @@
      (inc-local 5))")
 
 (def draw-opts
-  {:stress-node-spacing 2
-   :stress-iterations 400
-   :stress-refine-iterations 400
+  {:stress-node-spacing 1.7
+   :stress-iterations 200
+   :stress-refine-iterations 200
    :routing :shortest-path})
 
 (def semantic-draw-opts
