@@ -11,7 +11,7 @@
             [propagators.datastructures.compound-object.network-slot :as network-slot]
             [propagators.graph :as pgraph]
             [propagators.gur.accumulating :as acc]
-            [propagators.gur.accumulating.runner :as acc-runner]
+            [propagators.gur.accumulating.runner.instrumentation :as runner-instr]
             [propagators.gur.subenv.env :as env]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
@@ -940,7 +940,7 @@
         phase-events (atom [])
         network-slot-events (atom [])
         {:keys [net out-value]}
-        (binding [acc-runner/*prop-run-observer*
+        (binding [runner-instr/*prop-run-observer*
                   (fn [{:keys [net prop-id] :as event}]
                     (swap! activation-events
                            conj
@@ -948,7 +948,7 @@
                                   :net nil
                                   :op (:op (get (net/network-dict-entry net label-dict-key)
                                                 prop-id)))))
-                  acc-runner/*phase-observer*
+                  runner-instr/*phase-observer*
                   (fn [event]
                     (swap! phase-events conj event))
                   network-slot/*network-slot-observer*
