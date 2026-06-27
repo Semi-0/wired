@@ -24,8 +24,8 @@
 
 (def draw-opts
   {:stress-node-spacing 2.2
-   :stress-iterations 120
-   :stress-refine-iterations 120
+   :stress-iterations 200
+   :stress-refine-iterations 200
    :stress-aspect-ratio 1.35
    :arrow-position :middle})
 
@@ -275,24 +275,24 @@
 (defn- friendly-op
   [op]
   (case op
-    ctx/apply "apply"
-    ctx/recur "recur"
-    ctx/when "when"
-    obj/p:car "car"
-    obj/p:cdr "cdr"
-    obj/p:cons "cons"
+    ctx/apply "ctx/apply"
+    ctx/recur "ctx/recur"
+    ctx/when "ctx/when"
+    obj/p:car "obj/p:car"
+    obj/p:cdr "obj/p:cdr"
+    obj/p:cons "obj/p:cons"
     cons "cons"
-    cons/car "cons.car"
-    cons/cdr "cons.cdr"
-    p:id "id"
-    prop/* "mul"
-    prop/+ "add"
-    prop/- "sub"
-    prop/<= "lte"
-    prop/not "not"
-    prop/and "and"
-    prop/or "or"
-    prop/switch "switch"
+    cons/car "cons/car"
+    cons/cdr "cons/cdr"
+    p:id "p:id"
+    prop/* "prop/*"
+    prop/+ "prop/+"
+    prop/- "prop/-"
+    prop/<= "prop/<="
+    prop/not "prop/not"
+    prop/and "prop/and"
+    prop/or "prop/or"
+    prop/switch "prop/switch"
     (shorten op 12)))
 
 (defn- arrow-label
@@ -308,7 +308,7 @@
         args (:args record)]
     (cond
       (= op 'ctx/apply)
-      (str "apply "
+      (str (friendly-op op) " "
            (role-label n (first args))
            " "
            (arrow-label n (butlast (rest args)) (last args)))
@@ -326,28 +326,32 @@
            (arrow-label n (second args) (last args)))
 
       (= op 'ctx/recur)
-      (str "recur " (arrow-label n (butlast args) (last args)))
+      (str (friendly-op op) " " (arrow-label n (butlast args) (last args)))
 
       (= op 'ctx/when)
-      (str "when " (role-label n (first args)))
+      (str (friendly-op op) " " (role-label n (first args)))
 
       (= op 'obj/p:car)
-      (str "car " (role-label n (second args)) " -> " (role-label n (first args)))
+      (str (friendly-op op) " "
+           (role-label n (second args)) " -> " (role-label n (first args)))
 
       (= op 'obj/p:cdr)
-      (str "cdr " (role-label n (second args)) " -> " (role-label n (first args)))
+      (str (friendly-op op) " "
+           (role-label n (second args)) " -> " (role-label n (first args)))
 
       (= op 'cons/car)
-      (str "cons.car " (role-label n (nth args 2)) " <- " (role-label n (first args)))
+      (str (friendly-op op) " "
+           (role-label n (nth args 2)) " <- " (role-label n (first args)))
 
       (= op 'cons/cdr)
-      (str "cons.cdr " (role-label n (nth args 2)) " <- " (role-label n (second args)))
+      (str (friendly-op op) " "
+           (role-label n (nth args 2)) " <- " (role-label n (second args)))
 
       (= op 'p:id)
-      (str "id " (arrow-label n [(first args)] (second args)))
+      (str (friendly-op op) " " (arrow-label n [(first args)] (second args)))
 
       (= op 'prop/*)
-      (str "mul " (arrow-label n (butlast args) (last args)))
+      (str (friendly-op op) " " (arrow-label n (butlast args) (last args)))
 
       record
       (str (friendly-op op) " " (str/join "," (map #(role-label n %) args)))
@@ -357,11 +361,11 @@
           :prop))))
 
 (defn- cell-label
-  [render-id n id entry]
+  [_render-id n id entry]
   (let [names (get (dict-labels n) id)
         strongest (when (cell/cell? entry)
                     (cell/cell-strongest entry))]
-    (str (or (first names) (render-id id))
+    (str (or (first names) "cell")
          " "
          (shorten
           (cond
@@ -374,10 +378,10 @@
   [render-id n id]
   (let [entry (get (net/net-env n) id)]
     (case (env-kind entry)
-      :prop (str (shorten (prop-label n id) 18) " " (render-id id))
+      :prop (shorten (prop-label n id) 22)
       :cell (cell-label render-id n id entry)
-      :meta (str "meta " (render-id id))
-      :entry (str "entry " (render-id id)))))
+      :meta "meta"
+      :entry "entry")))
 
 (defn- graph-ids
   [n]
@@ -415,7 +419,6 @@
   (let [render-id (node-name-renderer)
         ids (stable-ids (graph-ids n))
         _ (doseq [id ids] (render-id id))
-        rid (fn [id] (str (name owner-label) ":" (render-id id)))
         prop-ids (filter #(prop/prop? (get (net/net-env n) %)) ids)
         cell-ids (filter #(cell/cell? (get (net/net-env n) %)) ids)
         edge-lines
@@ -423,8 +426,7 @@
               to (stable-ids (pgraph/node-output-ids node))
               :when (and (contains? (set ids) from)
                          (contains? (set ids) to))]
-          (str "  " (rid from) " -> " (rid to)
-               "    ; " (full-local-label n from)
+          (str "  " (full-local-label n from)
                " => " (full-local-label n to)))]
     (str "=== " title " ===\n"
          "nodes=" (count ids)
@@ -436,14 +438,14 @@
          (if (seq prop-ids)
            (str/join "\n"
                      (map (fn [id]
-                            (str "  " (rid id) "  " (full-local-label n id)))
+                            (str "  " (full-local-label n id)))
                           prop-ids))
            "  <none>")
          "\n\ncells:\n"
          (if (seq cell-ids)
            (str/join "\n"
                      (map (fn [id]
-                            (str "  " (rid id) "  " (full-local-label n id)))
+                            (str "  " (full-local-label n id)))
                           cell-ids))
            "  <none>")
          "\n\nedges:\n"
@@ -461,7 +463,7 @@
         nodes (into {}
                     (map (fn [id]
                            [(node-id id)
-      (str owner-label " " (local-node-label render-id n id))]))
+                            (local-node-label render-id n id)]))
                     ids)
         edges (vec
                (for [[from node] (net/net-graph n)
@@ -714,6 +716,216 @@
          owner-ids)]
     (vec (cons top-section owner-sections))))
 
+(defn- app-key-parts
+  [app-key]
+  (when (and (vector? app-key)
+             (= :gur/application (first app-key)))
+    {:closure-id (second app-key)
+     :arg-ids (vec (nth app-key 2))
+     :out-id (nth app-key 3)}))
+
+(defn- closure-name
+  [n closure-id]
+  (let [v (strongest n closure-id)]
+    (or (:gur/name v)
+        (role-label n closure-id))))
+
+(defn- frame-detail-label
+  [n app-key]
+  (let [{:keys [closure-id arg-ids out-id]} (app-key-parts app-key)
+        name (closure-name n closure-id)]
+    (str name " "
+         (str/join "," (map #(role-label n %) arg-ids))
+         " -> "
+         (role-label n out-id))))
+
+(defn- frame-display-labels
+  [n frames]
+  (let [indexed
+        (second
+         (reduce
+          (fn [[counts rows] app-key]
+            (let [{:keys [closure-id]} (app-key-parts app-key)
+                  name (str (closure-name n closure-id))
+                  i (inc (get counts name 0))]
+              [(assoc counts name i)
+               (assoc rows app-key {:label (str name "[" i "]")
+                                    :detail (frame-detail-label n app-key)})]))
+          [{} {}]
+          frames))]
+    indexed))
+
+(defn- frame-task-props
+  [n]
+  (let [tasks (or (net/network-dict-entry n acc/task-index-key) {})
+        frame-props
+        (reduce-kv
+         (fn [m task-key {:keys [prop-ids]}]
+           (if (and (vector? task-key)
+                    (= :frame (first task-key)))
+             (assoc m (second task-key) (set prop-ids))
+             m))
+         {}
+         tasks)
+        prop->frame
+        (into {}
+              (mapcat (fn [[app-key prop-ids]]
+                        (map (fn [prop-id] [prop-id app-key]) prop-ids)))
+              frame-props)]
+    (reduce-kv
+     (fn [m task-key {:keys [prop-ids]}]
+       (if (and (vector? task-key)
+                (= :when (first task-key)))
+         (let [when-key (second task-key)
+               when-prop-id (last when-key)]
+           (if-let [app-key (get prop->frame when-prop-id)]
+             (update m app-key #(into (or % #{}) prop-ids))
+             m))
+         m))
+     frame-props
+     tasks)))
+
+(defn- frame-for-prop
+  [frame-props prop-id]
+  (some (fn [[app-key prop-ids]]
+          (when (contains? prop-ids prop-id)
+            app-key))
+        frame-props))
+
+(defn- matching-frame
+  [frames closure-id arg-ids out-id]
+  (let [arg-ids (vec arg-ids)]
+    (some (fn [app-key]
+            (let [parts (app-key-parts app-key)]
+              (when (and (= closure-id (:closure-id parts))
+                         (= arg-ids (:arg-ids parts))
+                         (= out-id (:out-id parts)))
+                app-key)))
+          frames)))
+
+(defn- frame-edge-label
+  [op]
+  (case op
+    ctx/apply "apply"
+    ctx/recur "recur"
+    ctx/when "when"
+    (friendly-op op)))
+
+(defn- frame-graph
+  [owner-label n]
+  (let [frames (stable-ids (or (net/network-dict-entry n acc/frame-index-key) #{}))
+        frame-set (set frames)
+        frame-props (frame-task-props n)
+        records (net/network-dict-entry n label-dict-key)
+        display-labels (frame-display-labels n frames)
+        nodes (into {}
+                    (map (fn [app-key]
+                           [(str (name owner-label) ":" (hash (pr-str app-key)))
+                            (:label (get display-labels app-key))]))
+                    frames)
+        details (into {}
+                      (map (fn [app-key]
+                             [(str (name owner-label) ":" (hash (pr-str app-key)))
+                              (:detail (get display-labels app-key))]))
+                      frames)
+        node-id (fn [app-key] (str (name owner-label) ":" (hash (pr-str app-key))))
+        edges
+        (reduce-kv
+         (fn [edges prop-id {:keys [op args]}]
+           (if-let [from-frame (frame-for-prop frame-props prop-id)]
+             (case op
+               ctx/recur
+               (let [{:keys [closure-id]} (app-key-parts from-frame)
+                     to-frame (matching-frame frame-set
+                                              closure-id
+                                              (butlast args)
+                                              (last args))
+                     to-id (if to-frame
+                             (node-id to-frame)
+                             (str (node-id from-frame)
+                                  ":recur:"
+                                  (hash (pr-str args))))]
+                 (conj edges [(node-id from-frame)
+                              to-id
+                              (frame-edge-label op)]))
+
+               ctx/apply
+               (let [to-frame (matching-frame frame-set
+                                              (first args)
+                                              (butlast (rest args))
+                                              (last args))]
+                 (cond-> edges
+                   to-frame (conj [(node-id from-frame)
+                                   (node-id to-frame)
+                                   (frame-edge-label op)])))
+
+               ctx/when
+               (conj edges [(node-id from-frame)
+                            (str (node-id from-frame) ":when:" (hash (pr-str prop-id)))
+                            (frame-edge-label op)])
+
+               edges)
+             edges))
+         []
+         records)
+        when-nodes
+        (into {}
+              (keep (fn [[_from to label]]
+                      (when (= "when" label)
+                        [to "when"])))
+              edges)
+        recur-nodes
+        (into {}
+              (keep (fn [[_from to label]]
+                      (when (and (= "recur" label)
+                                 (not (contains? nodes to)))
+                        [to "recur-request"])))
+              edges)]
+    {:nodes (merge nodes when-nodes recur-nodes)
+     :details (merge details
+                     (into {}
+                           (map (fn [[id _label]]
+                                  [id "when cdr-present"])
+                                when-nodes))
+                     (into {}
+                           (map (fn [[id _label]]
+                                  [id "unmatched ctx/recur request"])
+                                recur-nodes)))
+     :edges (mapv (fn [[from to _label]] [from to]) edges)
+     :labeled-edges edges
+     :frame-count (count frames)}))
+
+(defn- frame-graph-section
+  [title frame-graph]
+  (str "=== " title " frame graph ===\n"
+       "frames=" (:frame-count frame-graph)
+       " nodes=" (count (:nodes frame-graph))
+       " edges=" (count (:edges frame-graph))
+       "\n\n"
+       (draw-string (:edges frame-graph) (:nodes frame-graph))
+       "\n"))
+
+(defn- frame-graph-legend-section
+  [title {:keys [nodes details labeled-edges]}]
+  (str "=== " title " frame graph ===\n\n"
+       "frames:\n"
+       (if (seq nodes)
+         (str/join "\n"
+                   (map (fn [[id label]]
+                          (str "  " label "  " (get details id)))
+                        nodes))
+         "  <none>")
+       "\n\nlinks:\n"
+       (if (seq labeled-edges)
+         (str/join "\n"
+                   (map (fn [[from to label]]
+                          (str "  " (get nodes from from)
+                               " --" label "--> "
+                               (get nodes to to)))
+                        labeled-edges))
+         "  <none>")
+       "\n\n"))
+
 (defn- write-edn!
   [path data]
   (spit path (with-out-str (pprint/pprint data))))
@@ -751,6 +963,8 @@
         txt-path (str out-prefix depth "-topology.txt")
         edn-path (str out-prefix depth "-topology.edn")
         legend-path (str out-prefix depth "-topology-legend.txt")
+        frame-path (str out-prefix depth "-frame-graph.txt")
+        frame-legend-path (str out-prefix depth "-frame-graph-legend.txt")
         summary-path (str out-prefix depth "-topology-summary.edn")
         summary (assoc (topology-summary net owner-limit)
                        :activation (activation-summary @activation-events)
@@ -766,7 +980,22 @@
                   (apply str
                          (map (fn [{:keys [title graph]}]
                                 (section-string title graph))
-                              sections)))]
+                              sections)))
+        frame-graphs (when-not summary-only?
+                       (vec
+                        (keep-indexed
+                         (fn [i owner-id]
+                           (when-let [n (owner-net net owner-id)]
+                             {:title (str "accumulated owner " (inc i))
+                              :graph (frame-graph
+                                      (keyword (str "owner" (inc i)))
+                                      n)}))
+                         (take owner-limit (application-owner-ids net)))))
+        frame-drawing (when-not summary-only?
+                        (apply str
+                               (map (fn [{:keys [title graph]}]
+                                      (frame-graph-section title graph))
+                                    frame-graphs)))]
     (when-not summary-only?
       (let [{:keys [edges nodes owner-count] :as topology} topology]
         (spit txt-path
@@ -799,9 +1028,26 @@
                                 (keyword (str "owner" (inc i)))
                                 n)))
                            (take owner-limit (application-owner-ids net))))))
+        (spit frame-path
+              (str "Accumulating GUR map-list frame graph\n"
+                   "depth=" depth "\n"
+                   "owner-count=" owner-count "\n"
+                   "out-value=" (value-summary out-value) "\n\n"
+                   frame-drawing))
+        (spit frame-legend-path
+              (str "Accumulating GUR map-list frame graph legend\n"
+                   "depth=" depth "\n"
+                   "owner-count=" owner-count "\n"
+                   "out-value=" (value-summary out-value) "\n\n"
+                   (apply str
+                          (map (fn [{:keys [title graph]}]
+                                 (frame-graph-legend-section title graph))
+                               frame-graphs))))
         (println "wrote" txt-path)
         (println "wrote" edn-path)
-        (println "wrote" legend-path)))
+        (println "wrote" legend-path)
+        (println "wrote" frame-path)
+        (println "wrote" frame-legend-path)))
     (write-edn! summary-path summary)
     (println "wrote" summary-path)
     (println "depth" depth "owners" owner-count)
