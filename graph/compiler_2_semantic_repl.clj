@@ -10,8 +10,8 @@
             [propagators.network :as net]))
 
 (def stress-opts
-  {:stress-node-spacing 3.0
-   :stress-iterations 300
+  {:stress-node-spacing 1.7
+   :stress-iterations 200
    :stress-refine-iterations 200
    :routing :shortest-path
    :arrow-position :end})

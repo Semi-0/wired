@@ -355,6 +355,70 @@
       (is (tui/graph-value? (get-in a-view [:blocks 4 :value])))
       (is (= "(def b 9)" (get-in b-view [:blocks 0 :value]))))))
 
+(deftest trace-block-reacts-to-later-upstream-relationships
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [text ["(def a)"
+                  "(def g)"
+                  "(trace a :upstream g)"]]
+      (runtime/submit-tui-block! session {:client-id "A"
+                                          :text text}))
+    (is (empty? (:edges (get-in (runtime/read-tui-view @session {:client-id "A"})
+                                [:blocks 3 :value]))))
+    (runtime/submit-tui-block! session {:client-id "A"
+                                        :text "(<-> (- 3 1) a)"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})
+          trace (get-in view [:blocks 3 :value])
+          edges (set (semantic-repl/edge-labels trace))]
+      (is (tui/graph-value? trace))
+      (is (contains? edges ["-" "2"]))
+      (is (contains? edges ["<->" "a"])))))
+
+(deftest submitted-trace-keeps-upstream-literal-constants
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [text ["(def a)"
+                  "(<-> (+ 1 2) a)"
+                  "(def g)"
+                  "(trace a :upstream g)"]]
+      (runtime/submit-tui-block! session {:client-id "A"
+                                          :text text}))
+    (let [view (runtime/read-tui-view @session {:client-id "A"})
+          trace (get-in view [:blocks 4 :value])
+          edges (set (semantic-repl/edge-labels trace))
+          rendered (tui/render-view view)]
+      (is (tui/graph-value? trace))
+      (is (contains? edges ["1" "+"]))
+      (is (contains? edges ["2" "+"]))
+      (is (contains? edges ["+" "3"]))
+      (is (contains? edges ["<->" "a"]))
+      (is (str/includes? rendered "| 1 |"))
+      (is (str/includes? rendered "| 2 |"))
+      (is (str/includes? rendered "| + |"))
+      (is (str/includes? rendered "| 3 |")))))
+
+(deftest trace-block-reacts-through-intermediate-cell-chain
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [text ["(def a)"
+                  "(def b)"
+                  "(<-> b a)"
+                  "(def g)"
+                  "(trace a :upstream g)"]]
+      (runtime/submit-tui-block! session {:client-id "A"
+                                          :text text}))
+    (runtime/submit-tui-block! session {:client-id "A"
+                                        :text "(<-> (+ 1 2) b)"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})
+          trace (get-in view [:blocks 5 :value])
+          edges (set (semantic-repl/edge-labels trace))]
+      (is (tui/graph-value? trace))
+      (is (contains? edges ["<->" "a"]))
+      (is (contains? edges ["<->" "b"]))
+      (is (contains? edges ["1" "+"]))
+      (is (contains? edges ["2" "+"]))
+      (is (contains? edges ["+" "3"])))))
+
 (deftest tui-renders-graph-valued-blocks-with-vijual
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "tui-graph"})

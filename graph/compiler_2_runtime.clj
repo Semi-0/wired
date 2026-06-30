@@ -187,6 +187,31 @@
 (defn- empty-graph []
   {:nodes {} :edges [] :values {}})
 
+(defn- namespace-graph
+  [graph prefix]
+  (let [rename (fn [node-id]
+                 (if (keyword? node-id)
+                   (keyword (namespace node-id)
+                            (str prefix "/" (name node-id)))
+                   [prefix node-id]))
+        rename-alias (fn [v]
+                       (cond
+                         (nil? v) #{}
+                         (set? v) (set (map rename v))
+                         (sequential? v) (set (map rename v))
+                         :else #{(rename v)}))]
+    (-> graph
+        (update :nodes update-keys rename)
+        (update :values update-keys rename)
+        (update :edges (fn [edges]
+                         (mapv (fn [[from to]]
+                                 [(rename from) (rename to)])
+                               edges)))
+        (update :node-aliases (fn [aliases]
+                                (into {}
+                                      (map (fn [[k v]] [k (rename-alias v)]))
+                                      aliases))))))
+
 (defn- valid-client-id? [client-id]
   (and (string? client-id)
        (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" client-id))))
@@ -343,6 +368,45 @@
                            {:arg-ids arg-ids})))
          (translate-messages current-net jp-id en-id)))}))
 
+(defn- trace-request-source
+  [graph source-id source-value direction]
+  (if (or (symbol? source-value)
+          (string? source-value)
+          (map? source-value)
+          (seq? source-value))
+    (semantic-trace/trace-request source-value direction)
+    (if-let [label (some->> (get-in graph [:node-aliases source-id])
+                            (#(cond
+                                (set? %) %
+                                (sequential? %) (set %)
+                                (some? %) #{%}
+                                :else #{}))
+                            (keep (:nodes graph))
+                            first)]
+      (semantic-trace/trace-request label direction)
+      {:node source-id :direction direction})))
+
+(defn- p:runtime-trace-request
+  [source-id direction-id graph-id out-id]
+  (let [inputs (cond-> [source-id graph-id] direction-id (conj direction-id))]
+    (prop/construct-propagator
+     (fn [_inputs _outputs network]
+       (let [direction (if direction-id
+                         (net/network-cell-strongest network direction-id)
+                         :upstream)
+             graph (net/network-cell-strongest network graph-id)
+             source-value (net/network-cell-strongest network source-id)]
+         (if (or (value/unusable? direction)
+                 (value/unusable? graph))
+           []
+           [(message out-id
+                     (trace-request-source graph
+                                           source-id
+                                           source-value
+                                           direction))])))
+     inputs
+     [out-id])))
+
 (defn- trace-operator [graph-id]
   (with-meta
     (fn [network arg-ids out-id]
@@ -356,15 +420,11 @@
         (when-not (#{2 3} (count arg-ids))
           (throw (ex-info "trace expects source, optional direction, and output"
                           {:arg-ids arg-ids})))
-        (let [[request-prop n1]
-              ((if direction-id
-                 (semantic-trace/p:cell-trace-request source-id
-                                                       direction-id
-                                                       request-id)
-                 (semantic-trace/p:fixed-trace-request source-id
-                                                       :upstream
-                                                       request-id))
-               network*)
+        (let [[request-prop n1] ((p:runtime-trace-request source-id
+                                                          direction-id
+                                                          graph-id
+                                                          request-id)
+                                 network*)
               [trace-prop n2] ((semantic-trace/p:semantic-trace request-id
                                                                  graph-id
                                                                  target-id)
@@ -382,12 +442,10 @@
                          :upstream)
              graph (net/network-cell-strongest current-net graph-id)
              source-value (net/network-cell-strongest current-net source-id)
-             request (if (or (symbol? source-value)
-                             (string? source-value)
-                             (map? source-value)
-                             (seq? source-value))
-                       (semantic-trace/trace-request source-value direction)
-                       {:node source-id :direction direction})]
+             request (trace-request-source graph
+                                           source-id
+                                           source-value
+                                           direction)]
          (if (or (value/unusable? graph)
                  (value/unusable? direction))
            []
@@ -470,6 +528,25 @@
     (catch Throwable _
       false)))
 
+(defn- trace-source? [source]
+  (try
+    (let [form (compiler-parser/read-form source)]
+      (and (seq? form) (= 'trace (first form))))
+    (catch Throwable _
+      false)))
+
+(defn- normalize-trace-source
+  [source]
+  (try
+    (let [form (compiler-parser/read-form source)]
+      (if (and (seq? form)
+               (= 'trace (first form))
+               (symbol? (second form)))
+        (pr-str (cons 'trace (cons (name (second form)) (nnext form))))
+        source))
+    (catch Throwable _
+      source)))
+
 (defn- auto-output-source [state block source]
   (if (or (top-level-declaration? source)
           (nil? (block-by-index state (:client-id block) (inc (:index block)))))
@@ -484,27 +561,38 @@
 (defn- compile-program-form
   [state block epoch source]
   (try
-    (let [source (auto-output-source state block source)
+    (let [source (normalize-trace-source source)
+          source (auto-output-source state block source)
           graph-id (runtime-graph-id)
           env (runtime-env state (:program/env state) graph-id (:client-id block))
+          program-net-input (nb/install-cell (:program/net state)
+                                             graph-id
+                                             (:graph state)
+                                             (:graph state))
           compiled (compiler/compile-source
                     source
                     env
-                    {:net (:program/net state)
+                    {:net program-net-input
                      :seed [:runtime/block (:order block) (:epoch block)]})
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
+          graph* (namespace-graph
+                  (semantic-repl/compiled-semantic-graph compiled program-net0)
+                  (str (:client-id block) "-" (:order block)))
           graph (assoc (semantic-trace/graph-union
                         (:graph state)
-                        (semantic-repl/compiled-semantic-graph compiled program-net0))
+                        graph*)
                        :source source)
           [tasks program-net1] (core/eval-cells [(message graph-id graph)]
                                                 (nb/ensure-cell program-net0
                                                                 graph-id))
           program-net (nb/run-propagators (core/run-tasks tasks program-net1)
                                           (:props compiled))
+          graph* (namespace-graph
+                  (semantic-repl/compiled-semantic-graph compiled program-net)
+                  (str (:client-id block) "-" (:order block)))
           graph (assoc (semantic-trace/graph-union
                         (:graph state)
-                        (semantic-repl/compiled-semantic-graph compiled program-net))
+                        graph*)
                        :source source)
           result (compiled-result-value compiled program-net)
           result-key [(:client-id block) (:index block)]
@@ -535,6 +623,7 @@
 (defn- rebuild-program-state
   [state]
   (let [epoch (inc (or (:program/epoch state) 0))
+        source-blocks (source-blocks state)
         base (assoc state
                     :program/net (nb/install-cell
                                   (seed-program-blocks
@@ -551,10 +640,17 @@
                     :compiled-network net/empty-net
                     :graph (empty-graph)
                     :source nil)]
-    (reduce (fn [s block]
-              (rebuild-block s epoch block))
-            base
-            (source-blocks state))))
+    (as-> (reduce (fn [s block]
+                    (rebuild-block s epoch block))
+                  base
+                  source-blocks) s
+      (reduce (fn [s block]
+                (let [source (block-text s block)]
+                  (if (and (string? source) (trace-source? source))
+                    (compile-program-form s block epoch source)
+                    s)))
+              s
+              source-blocks))))
 
 (defn- rebuild-program!
   [session]
