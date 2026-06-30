@@ -47,13 +47,26 @@
       :apply (str "(" (ast-label (ast/operator expr)) " ...)")
       (display-name (ast/type expr)))))
 
+(defn- env-frames [env]
+  (take-while #(and (some? %) (not (value/unusable? %)))
+              (iterate #(obj/slot-value % cenv/env-parent-key) env)))
+
 (defn environment-labels [env]
-  (into {}
-        (keep (fn [slot-key]
-                (when-not (contains? cenv/env-internal-keys slot-key)
-                  (when-let [id (cenv/binding-id (cenv/lookup env slot-key))]
-                    [id (display-name slot-key)]))))
-        (obj/public-slot-keys env)))
+  (reduce
+   (fn [labels frame]
+     (reduce
+      (fn [labels slot-key]
+        (if (contains? cenv/env-internal-keys slot-key)
+          labels
+          (if-let [id (cenv/binding-id (cenv/lookup frame slot-key))]
+            (if (contains? labels id)
+              labels
+              (assoc labels id (display-name slot-key)))
+            labels)))
+      labels
+      (obj/public-slot-keys frame)))
+   {}
+   (env-frames env)))
 
 (defn network-closure-values [n]
   (keep (fn [[id entry]]
@@ -288,11 +301,14 @@
   ([compiled n]
    (semantic-base-labels compiled n {}))
   ([compiled n {:keys [result-label] :or {result-label "result"}}]
-   (merge (literal-cell-labels n)
-          (closure-labels n)
-          (environment-labels (:env compiled))
-          (closure-env-labels n)
-          {(:cell compiled) result-label})))
+   (let [env-labels (merge (environment-labels (:env compiled))
+                           (closure-env-labels n))
+         labels (merge (literal-cell-labels n)
+                       (closure-labels n)
+                       env-labels)]
+     (if (contains? env-labels (:cell compiled))
+       labels
+       (assoc labels (:cell compiled) result-label)))))
 
 (defn semantic-label [labels id]
   (or (get labels id) "cell"))
@@ -357,16 +373,33 @@
               arg-cells)
       (semantic-edge state operator-key operator-label output-id output-label))))
 
+(defn add-application-node-semantic
+  [state labels {:keys [app-id operator-label arg-cells output-id]}]
+  (let [app-key [:application app-id]
+        app-label (str "app:" operator-label)
+        output-label (semantic-label labels output-id)]
+    (as-> state state
+      (reduce (fn [state arg-id]
+                (semantic-edge state
+                               arg-id
+                               (semantic-label labels arg-id)
+                               app-key
+                               app-label))
+              state
+              arg-cells)
+      (semantic-edge state app-key app-label output-id output-label))))
+
 (defn add-application-semantic [state labels {:keys [operator-label lowering] :as app}]
-  (cond
-    (= "<->" operator-label)
-    (add-sync-semantic state labels app)
+  (let [state (add-application-node-semantic state labels app)]
+    (cond
+      (= "<->" operator-label)
+      (add-sync-semantic state labels app)
 
-    (= :closure-cell lowering)
-    (add-call-semantic state labels app)
+      (= :closure-cell lowering)
+      (add-call-semantic state labels app)
 
-    :else
-    (add-operator-semantic state labels app)))
+      :else
+      (add-operator-semantic state labels app))))
 
 (defn semantic-graph
   ([compiled n]

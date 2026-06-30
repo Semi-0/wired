@@ -8,6 +8,7 @@
             [propagators.ids :as ids])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter
             PushbackReader]
+           [java.lang Character$UnicodeBlock]
            [java.net ServerSocket Socket]))
 
 (def default-host "127.0.0.1")
@@ -108,9 +109,23 @@
   [width]
   (apply str (repeat (max 1 width) \=)))
 
+(defn- wide-char?
+  [^Character c]
+  (let [block (Character$UnicodeBlock/of c)]
+    (contains? #{Character$UnicodeBlock/CJK_UNIFIED_IDEOGRAPHS
+                 Character$UnicodeBlock/CJK_SYMBOLS_AND_PUNCTUATION
+                 Character$UnicodeBlock/HIRAGANA
+                 Character$UnicodeBlock/KATAKANA
+                 Character$UnicodeBlock/HALFWIDTH_AND_FULLWIDTH_FORMS}
+               block)))
+
+(defn- display-width
+  [text]
+  (reduce + (map #(if (wide-char? %) 2 1) text)))
+
 (defn- center-text
   [text width]
-  (let [pad (max 0 (quot (- width (count text)) 2))]
+  (let [pad (max 0 (quot (- width (display-width text)) 2))]
     (str (apply str (repeat pad \space)) text)))
 
 (defn- print-launch-banner
@@ -119,7 +134,7 @@
     (println (separator width))
     (println)
     (println)
-    (println (center-text "lain-lang 0.2 / miu kernel" width))
+    (println (center-text "lain-lang 0.2 / μ kernel" width))
     (println)
     (println (center-text "どこにでもいるということは、 どこにもいないということだ。" width))
     (println (center-text "神の果実は私たちの中にある。" width))

@@ -1,19 +1,20 @@
 (ns graph.compiler-2-runtime
   "Shared compiler-2 runtime session for socket clients."
-  (:require [clojure.edn :as edn]
-            [graph.compiler-2-semantic-repl :as semantic-repl]
+  (:require [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.compiler-2.helpers :as compiler-helpers]
             [propagators.compiler-2.main :as compiler]
+            [propagators.compiler-2.parser :as compiler-parser]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
+            [propagators.propagator :as prop]
             [propagators.semantic-trace :as semantic-trace]
             [propagators.stdlib.prop :as stdlib-prop])
   (:import [java.util.concurrent Executors TimeUnit]))
@@ -26,6 +27,9 @@
   (ids/->NodeId
    (java.util.UUID/nameUUIDFromBytes
     (.getBytes (pr-str (into [:compiler-2-runtime] parts)) "UTF-8"))))
+
+(defn- runtime-graph-id []
+  (stable-node-id :runtime :semantic-graph))
 
 (defn- daemon-executor
   [name]
@@ -116,61 +120,11 @@
         (some #(when (= label (:label %)) %) cells)
         (throw (ex-info "cell not found" {:cell-id cell-id :label label})))))
 
-(defn- resolve-cell-id
-  [state {:keys [cell-id label]}]
-  (let [labels (labels state)
-        by-label (some (fn [[id entry]]
-                         (when (and (cell/cell? entry)
-                                    (= label (get labels id)))
-                           id))
-                       (net/net-env (:program/net state)))
-        by-cell-id (some (fn [[id entry]]
-                           (when (and (cell/cell? entry)
-                                      (= cell-id (pr-str id)))
-                             id))
-                         (net/net-env (:program/net state)))]
-    (or by-cell-id
-        by-label
-        (throw (ex-info "cell not found" {:cell-id cell-id :label label})))))
-
-(defn- runtime-cell-id
-  [state spec]
-  (try
-    (resolve-cell-id state spec)
-    (catch Exception _
-      nil)))
-
-(defn- parse-display-value
-  [x]
-  (if (string? x)
-    (try
-      (edn/read-string x)
-      (catch Throwable _
-        x))
-    x))
-
-(defn- compiled-cell-value
-  [state {:keys [label]}]
-  (let [compiled-network (:program/net state)
-        labels (when (and compiled-network (:compiled state))
-                 (demo/compiled-labels (:compiled state) compiled-network))]
-    (when (and label compiled-network)
-      (or (some (fn [[id entry]]
-                  (when (and (cell/cell? entry)
-                             (= label (get labels id)))
-                    (net/network-cell-strongest compiled-network id)))
-                (net/net-env compiled-network))
-          (some-> (:graph state)
-                  semantic-repl/value-labels
-                  (get label)
-                  parse-display-value)))))
-
 (defn read-cell
   [state request]
   (resolve-cell-row (require-state state) request))
 
-(declare append-tui-block! edit-tui-block! install-block-slots semantic-trace
-         sync-tui-block!)
+(declare append-tui-block! edit-tui-block! install-block-slots read-tui-view semantic-trace)
 
 (defn- block-by-index
   [state client-id index]
@@ -202,7 +156,7 @@
   (let [order (next-global-order state)]
     (-> state
         (update-block client-id index
-                      #(assoc % :order order :generated? false))
+                      #(assoc % :order order))
         (update :block-order (fnil conj []) {:client-id client-id
                                              :index index})
         (assoc :next-order (inc order)))))
@@ -212,8 +166,7 @@
   (->> (:block-order state)
        (keep (fn [{:keys [client-id index]}]
                (when-let [block (block-by-index state client-id index)]
-                 (when (and (not (:generated? block))
-                            (some? (:order block)))
+                 (when (some? (:order block))
                    (assoc block :client-id client-id)))))
        (sort-by :order)
        vec))
@@ -228,7 +181,7 @@
         result (net/network-cell-strongest network result-id)]
     (cond
       (value/unusable? result) value/nothing
-      (net/network? result) (semantic-repl/compiled-semantic-graph compiled network)
+      (net/network? result) value/nothing
       :else result)))
 
 (defn- empty-graph []
@@ -238,48 +191,157 @@
   (and (string? client-id)
        (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" client-id))))
 
-(defn- block-list-symbol [client-id]
-  (symbol (str client-id ".block")))
+(defn- declared-slot-parent-id
+  [network block-id slot-key]
+  (some->> (get (obj/accessor-declarations-for network block-id) slot-key)
+           keys
+           (sort-by pr-str)
+           first))
 
-(defn- block-at-operator [head-id->blocks]
+(defn- instance-block-head-id
+  [network instance-id]
+  (let [instance-value (net/network-cell-strongest network instance-id)
+        instance-id (if (ids/node-id? instance-value)
+                      instance-value
+                      instance-id)]
+    (when-let [blocks-id (declared-slot-parent-id network
+                                                  instance-id
+                                                  :instance/blocks)]
+      (net/network-cell-strongest network blocks-id))))
+
+(defn- block-at-text-id
+  [network instance-id index-id]
+  (let [wanted-index (net/network-cell-strongest network index-id)
+        first-block-id (instance-block-head-id network instance-id)]
+    (loop [block-id first-block-id
+           seen #{}]
+      (when (and (ids/node-id? block-id)
+                 (not (contains? seen block-id)))
+        (let [index-cell-id (declared-slot-parent-id network
+                                                     block-id
+                                                     :block/index)
+              text-cell-id (declared-slot-parent-id network
+                                                    block-id
+                                                    :block/text)
+              next-cell-id (declared-slot-parent-id network block-id :cdr)
+              block-index (when index-cell-id
+                            (net/network-cell-strongest network index-cell-id))]
+          (if (= wanted-index block-index)
+            text-cell-id
+            (recur (when next-cell-id
+                     (net/network-cell-strongest network next-cell-id))
+                   (conj seen block-id))))))))
+
+(defn- block-at-operator []
   (with-meta
     (fn [network arg-ids out-id]
-      (let [[head-id index-id maybe-out] (vec arg-ids)
+      (let [[instance-id index-id maybe-out] (vec arg-ids)
             target-id (or maybe-out out-id)
-            index (net/network-cell-strongest network index-id)
-            block (some #(when (= index (:index %)) %)
-                        (get head-id->blocks head-id))]
-        (when-not (and (= 3 (count arg-ids)) block)
-          (throw (ex-info "block-at expects a known block list and index"
-                          {:arg-ids arg-ids :index index})))
-        (let [[read-prop n1] ((stdlib-prop/id (:text-id block) target-id)
-                              network)
-              [write-prop n2] ((stdlib-prop/id target-id (:text-id block))
-                               n1)]
+            text-id (block-at-text-id network instance-id index-id)]
+        (when-not (and (= 3 (count arg-ids)) text-id)
+          (throw (ex-info "block-at expects a known instance and index"
+                          {:arg-ids arg-ids
+                           :index (net/network-cell-strongest network
+                                                             index-id)})))
+        (let [[read-prop n1] ((stdlib-prop/id text-id target-id) network)
+              [write-prop n2] ((stdlib-prop/id target-id text-id) n1)]
           [n2 [read-prop write-prop] target-id])))
     {compiler-helpers/output-selector-key
      (fn [arg-ids fallback-id]
        (or (nth (vec arg-ids) 2 nil) fallback-id))
      compiler-helpers/application-activate-key
      (fn [current-net _context-id arg-ids out-id]
-       (let [[head-id index-id maybe-out] (vec arg-ids)
+       (let [[instance-id index-id maybe-out] (vec arg-ids)
              target-id (or maybe-out out-id)
-             index (net/network-cell-strongest current-net index-id)
-             block (some #(when (= index (:index %)) %)
-                         (get head-id->blocks head-id))
-             source-value (when block
+             text-id (block-at-text-id current-net instance-id index-id)
+             source-value (when text-id
                             (net/network-cell-strongest current-net
-                                                        (:text-id block)))
+                                                        text-id))
              target-value (net/network-cell-strongest current-net target-id)]
          (when-not (= 3 (count arg-ids))
-           (throw (ex-info "block-at expects list, index, and output"
+           (throw (ex-info "block-at expects instance, index, and output"
                            {:arg-ids arg-ids})))
          (cond-> []
-           (and block (not (value/unusable? source-value)))
+           text-id
            (conj (message target-id source-value))
 
-           (and block (not (value/unusable? target-value)))
-           (conj (message (:text-id block) target-value)))))}))
+           text-id
+           (conj (message text-id target-value)))))}))
+
+(defn- instance-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[instance-id maybe-out] (vec arg-ids)
+            target-id (or maybe-out out-id)]
+        (when-not (#{1 2} (count arg-ids))
+          (throw (ex-info "instance expects instance and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[read-prop n1] ((stdlib-prop/id instance-id target-id) network)
+              [write-prop n2] ((stdlib-prop/id target-id instance-id) n1)]
+          [n2 [read-prop write-prop] target-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[instance-id maybe-out] (vec arg-ids)
+             target-id (or maybe-out out-id)
+             source-value (net/network-cell-strongest current-net instance-id)
+             target-value (net/network-cell-strongest current-net target-id)]
+         (when-not (#{1 2} (count arg-ids))
+           (throw (ex-info "instance expects instance and optional output"
+                           {:arg-ids arg-ids})))
+         (cond-> []
+           (not (value/unusable? source-value))
+           (conj (message target-id source-value))
+
+           (not (value/unusable? target-value))
+           (conj (message instance-id target-value)))))}))
+
+(def ^:private jp->en
+  {"猫" "cat"
+   "犬" "dog"
+   "水" "water"})
+
+(def ^:private en->jp
+  (into {} (map (fn [[jp en]] [en jp]) jp->en)))
+
+(defn- translate-messages
+  [network jp-id en-id]
+  (let [jp (net/network-cell-strongest network jp-id)
+        en (net/network-cell-strongest network en-id)
+        en' (when (string? jp) (get jp->en jp))
+        jp' (when (string? en) (get en->jp en))]
+    (cond-> []
+      en' (conj (message en-id en'))
+      jp' (conj (message jp-id jp')))))
+
+(defn- translate-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[jp-id en-id] (vec arg-ids)]
+        (when-not (and jp-id en-id (= 2 (count arg-ids)))
+          (throw (ex-info "translate expects Japanese and English cells"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id n]
+              ((prop/construct-propagator
+                (prop/concrete-propagator
+                 (fn [_inputs _outputs current-net]
+                   (translate-messages current-net jp-id en-id)))
+                [jp-id en-id]
+                [jp-id en-id])
+               network)]
+          [n [prop-id] (or out-id en-id)])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (second (vec arg-ids)) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids _out-id]
+       (let [[jp-id en-id] (vec arg-ids)]
+         (when-not (and jp-id en-id (= 2 (count arg-ids)))
+           (throw (ex-info "translate expects Japanese and English cells"
+                           {:arg-ids arg-ids})))
+         (translate-messages current-net jp-id en-id)))}))
 
 (defn- trace-operator [graph-id]
   (with-meta
@@ -320,10 +382,12 @@
                          :upstream)
              graph (net/network-cell-strongest current-net graph-id)
              source-value (net/network-cell-strongest current-net source-id)
-             request (cond-> {:node source-id :direction direction}
-                       (not (value/unusable? source-value))
-                       (assoc :value-label
-                              (semantic-repl/display-cell-value source-value)))]
+             request (if (or (symbol? source-value)
+                             (string? source-value)
+                             (map? source-value)
+                             (seq? source-value))
+                       (semantic-trace/trace-request source-value direction)
+                       {:node source-id :direction direction})]
          (if (or (value/unusable? graph)
                  (value/unusable? direction))
            []
@@ -332,51 +396,33 @@
                       graph
                       request))])))}))
 
-(defn- write-output
-  [state block epoch value]
-  (if-let [output-index (:output-index block)]
-    (if-let [output-block (block-by-index state (:client-id block) output-index)]
-      (write-block-value state output-block epoch value)
-      state)
-    state))
-
-(defn- write-output-to-program-net
-  [program-net block state value]
-  (if-let [output-index (:output-index block)]
-    (if-let [output-block (block-by-index state (:client-id block) output-index)]
-      (nb/seed-cell (nb/ensure-cell program-net (:text-id output-block))
-                    (:text-id output-block)
-                    value)
-      program-net)
-    program-net))
-
-(defn- read-program-cell
-  [state request]
-  (or (compiled-cell-value state request)
-      (when-let [source-id (runtime-cell-id state request)]
-        (net/network-cell-strongest (:program/net state) source-id))))
-
 (defn- all-blocks [state]
   (mapcat (fn [[client-id tui]]
             (map #(assoc % :client-id client-id) (:blocks tui)))
           (:tuis state)))
 
-(defn- clear-generated-block-values
-  [state]
-  (update state :network
-          (fn [n]
-            (reduce (fn [n block]
-                      (if (:generated? block)
-                        (nb/install-cell n (:text-id block))
-                        n))
-                    n
-                    (all-blocks state)))))
-
 (defn- seed-program-block-cell [program-net runtime-net id]
   (let [v (net/network-cell-strongest runtime-net id)]
-    (if (value/unusable? v)
+    (if (or (value/unusable? v)
+            (semantic-trace/semantic-trace-graph? v))
       (nb/ensure-cell program-net id)
       (nb/install-cell program-net id v v))))
+
+(defn- install-instance-slots
+  [n {:keys [instance-id blocks-id]}]
+  (let [[blocks-prop n] ((obj/p:slot :instance/blocks blocks-id instance-id) n)]
+    (nb/run-propagators n [blocks-prop])))
+
+(defn- seed-program-instances [state program-net]
+  (reduce-kv
+   (fn [n _client-id {:keys [instance-id blocks-id]}]
+     (-> n
+         (seed-program-block-cell (:network state) instance-id)
+         (seed-program-block-cell (:network state) blocks-id)
+         (install-instance-slots {:instance-id instance-id
+                                  :blocks-id blocks-id})))
+   program-net
+   (:tuis state)))
 
 (defn- seed-program-blocks [state program-net]
   (reduce
@@ -384,63 +430,83 @@
      (let [n0 (reduce #(seed-program-block-cell %1 (:network state) %2)
                       n
                       [(:block-id block) (:index-id block)
-                       (:next-id block)])
-           n0 (if (:generated? block)
-                (nb/ensure-cell n0 (:text-id block))
-                (seed-program-block-cell n0 (:network state) (:text-id block)))]
+                       (:next-id block) (:text-id block)])]
        (install-block-slots n0 block)))
    program-net
    (all-blocks state)))
 
-(defn- runtime-env [state base-env graph-id]
-  (let [head-id->blocks (into {}
-                              (keep (fn [[_ {:keys [head-id blocks]}]]
-                                      (when head-id [head-id blocks])))
-                              (:tuis state))]
-    (as-> base-env env
-      (cenv/bind-at env 'block-at (block-at-operator head-id->blocks) 0)
-      (cenv/bind-at env 'trace (trace-operator graph-id) 0)
-      (reduce-kv (fn [e client-id {:keys [head-id]}]
-                   (if head-id
-                     (cenv/bind-at e
-                                   (block-list-symbol client-id)
-                                   (cenv/cell-binding head-id)
-                                   0)
-                     e))
-                 env
-                 (:tuis state)))))
+(defn- runtime-env [state base-env graph-id current-client-id]
+  (as-> base-env env
+    (cenv/bind-at env 'block-at (block-at-operator) 0)
+    (cenv/bind-at env 'instance (instance-operator) 0)
+    (cenv/bind-at env 'trace (trace-operator graph-id) 0)
+    (cenv/bind-at env 'translate (translate-operator) 0)
+    (reduce-kv (fn [e client-id {:keys [instance-id]}]
+                 (cenv/bind-at e
+                               (symbol client-id)
+                               (cenv/cell-binding instance-id)
+                               0))
+               env
+               (:tuis state))
+    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
+      (cenv/bind-at env '% (cenv/cell-binding instance-id) 0)
+      env)))
 
 (defn- sync-program-block-writes [state program-net epoch]
   (reduce (fn [s block]
             (let [v (net/network-cell-strongest program-net (:text-id block))]
-              (if (value/unusable? v)
+              (if (= value/nothing v)
                 s
                 (write-block-value s block epoch v))))
           state
           (all-blocks state)))
 
+(defn- top-level-declaration? [source]
+  (try
+    (let [form (compiler-parser/read-form source)]
+      (and (seq? form)
+           (contains? '#{def def-cell def-net <-> block-at translate}
+                      (first form))))
+    (catch Throwable _
+      false)))
+
+(defn- auto-output-source [state block source]
+  (if (or (top-level-declaration? source)
+          (nil? (block-by-index state (:client-id block) (inc (:index block)))))
+    source
+    (format "(let-cell [__runtime_out]
+               (<-> %s __runtime_out)
+               (block-at %% %d __runtime_out)
+               __runtime_out)"
+            source
+            (inc (:index block)))))
+
 (defn- compile-program-form
   [state block epoch source]
   (try
-    (let [graph-id (stable-node-id :runtime :graph (:order block) epoch)
-          env (runtime-env state (:program/env state) graph-id)
+    (let [source (auto-output-source state block source)
+          graph-id (runtime-graph-id)
+          env (runtime-env state (:program/env state) graph-id (:client-id block))
           compiled (compiler/compile-source
                     source
                     env
                     {:net (:program/net state)
                      :seed [:runtime/block (:order block) (:epoch block)]})
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
-          graph (assoc (semantic-repl/compiled-semantic-graph compiled program-net0)
+          graph (assoc (semantic-trace/graph-union
+                        (:graph state)
+                        (semantic-repl/compiled-semantic-graph compiled program-net0))
                        :source source)
           [tasks program-net1] (core/eval-cells [(message graph-id graph)]
                                                 (nb/ensure-cell program-net0
                                                                 graph-id))
           program-net (nb/run-propagators (core/run-tasks tasks program-net1)
                                           (:props compiled))
-          graph (assoc (semantic-repl/compiled-semantic-graph compiled program-net)
+          graph (assoc (semantic-trace/graph-union
+                        (:graph state)
+                        (semantic-repl/compiled-semantic-graph compiled program-net))
                        :source source)
           result (compiled-result-value compiled program-net)
-          program-net (write-output-to-program-net program-net block state result)
           result-key [(:client-id block) (:index block)]
           state' (sync-program-block-writes state program-net epoch)]
       (-> state'
@@ -452,11 +518,11 @@
                  :graph graph
                  :source source)
           (assoc-in [:program/results result-key]
-                    {:result result :compiled compiled})
-          (write-output block epoch result)))
+                    {:result result :compiled compiled})))
     (catch Throwable t
-      (write-output state block epoch
-                    (str "error in block " (:index block) ": " (ex-message t))))))
+      (assoc-in state
+                [:program/results [(:client-id block) (:index block)]]
+                {:error (ex-message t)}))))
 
 (defn- rebuild-block
   [state epoch block]
@@ -468,10 +534,15 @@
 
 (defn- rebuild-program-state
   [state]
-  (let [state (clear-generated-block-values state)
-        epoch (inc (or (:program/epoch state) 0))
+  (let [epoch (inc (or (:program/epoch state) 0))
         base (assoc state
-                    :program/net (seed-program-blocks state net/empty-net)
+                    :program/net (nb/install-cell
+                                  (seed-program-blocks
+                                   state
+                                   (seed-program-instances state net/empty-net))
+                                  (runtime-graph-id)
+                                  (semantic-trace/graph-union (empty-graph))
+                                  (semantic-trace/graph-union (empty-graph)))
                     :program/env (compiler-helpers/default-env)
                     :program/graph (empty-graph)
                     :program/results {}
@@ -627,9 +698,18 @@
        :view-id (pr-str (:view-id tui))
        :next-index (:next-index tui)}
       (let [view-id (stable-node-id :tui client-id :view)
-            n (nb/ensure-cell (:network state) view-id)
+            instance-id (stable-node-id :tui client-id :instance)
+            blocks-id (stable-node-id :tui client-id :blocks)
+            n (-> (:network state)
+                  (nb/ensure-cell view-id)
+                  (nb/install-cell instance-id instance-id instance-id)
+                  (nb/ensure-cell blocks-id)
+                  (install-instance-slots {:instance-id instance-id
+                                           :blocks-id blocks-id}))
             tui {:client-id client-id
                  :view-id view-id
+                 :instance-id instance-id
+                 :blocks-id blocks-id
                  :head-id nil
                  :tail-id nil
                  :next-index 0
@@ -646,8 +726,8 @@
   (register-tui! session {:client-id client-id})
   (get-in @session [:tuis client-id]))
 
-(defn- append-tui-block-raw!
-  [session {:keys [client-id text generated?] :as command}]
+(defn append-tui-block!
+  [session {:keys [client-id text rebuild?] :or {rebuild? true} :as command}]
   (let [tui (tui! session client-id)
         index (:next-index tui)
         has-text? (contains? command :text)
@@ -656,8 +736,7 @@
                :text-id (ids/new-node-id)
                :next-id (ids/new-node-id)
                :index index
-               :epoch 0
-               :generated? (boolean generated?)}
+               :epoch 0}
         state @session
         n0 (-> (:network state)
                (nb/install-cell (:block-id block))
@@ -669,7 +748,9 @@
         n1 (install-block-slots n0 block)
         messages (cond-> []
                    (nil? (:head-id tui)) (conj (message (:view-id tui)
-                                                        (:block-id block)))
+                                                        (:block-id block))
+                                                   (message (:blocks-id tui)
+                                                            (:block-id block)))
                    (:tail-id tui) (conj (message (:next-id (peek (:blocks tui)))
                                                  (:block-id block))))
         [tasks n2] (core/eval-cells messages n1)
@@ -682,39 +763,33 @@
     (swap! session #(-> %
                         (assoc :network n3)
                         (assoc-in [:tuis client-id] tui')))
+    (when has-text?
+      (swap! session assign-source-order client-id index))
+    (when rebuild?
+      (rebuild-program! session))
     {:client-id client-id
      :index index
      :block-id (pr-str (:block-id block))
-     :text-id (pr-str (:text-id block))
-     :block block}))
+     :text-id (pr-str (:text-id block))}))
 
-(defn append-tui-block!
-  [session {:keys [client-id generated?] :as command}]
-  (let [source-result (append-tui-block-raw! session command)
-        source-block (:block source-result)]
-    (if generated?
-      (dissoc source-result :block)
-      (let [output-result (append-tui-block-raw! session
-                                                {:client-id client-id
-                                                 :generated? true})
-            output-block (:block output-result)
-            source-block' (assoc source-block
-                                 :output-index (:index output-block)
-                                 :output-text-id (:text-id output-block))]
-        (swap! session
-               #(-> %
-                    (assign-source-order client-id (:index source-block))
-                    (update-block client-id
-                                  (:index source-block)
-                                  (fn [block]
-                                    (merge block
-                                           (select-keys source-block'
-                                                        [:output-index
-                                                         :output-text-id]))))))
-        (rebuild-program! session)
-        (assoc (dissoc source-result :block)
-               :output-index (:index output-block)
-               :output-block-id (:block-id output-result))))))
+(defn- next-view-block-index
+  [view]
+  (or (some->> (:blocks view)
+               (map :index)
+               seq
+               (apply max)
+               inc)
+      0))
+
+(defn- input-view-block-index
+  [view]
+  (let [blocks (:blocks view)
+        last-block (peek blocks)]
+    (if (and last-block
+             (= value/nothing (:value last-block))
+             (not (:referenced? last-block)))
+      (:index last-block)
+      (next-view-block-index view))))
 
 (defn edit-tui-block!
   [session {:keys [client-id index text]}]
@@ -722,80 +797,83 @@
         block0 (some #(when (= index (:index %)) %) (:blocks tui))]
     (when-not block0
       (throw (ex-info "block not found" {:client-id client-id :index index})))
-    (let [block (if (:generated? block0)
-                  (let [output-result (append-tui-block-raw!
-                                       session
-                                       {:client-id client-id
-                                        :generated? true})
-                        output-block (:block output-result)
-                        block' (assoc block0
-                                      :generated? false
-                                      :output-index (:index output-block)
-                                      :output-text-id (:text-id output-block))]
-                    (swap! session
-                           #(-> %
-                                (assign-source-order client-id index)
-                                (update-block client-id index
-                                              (fn [b]
-                                                (merge b
-                                                       (select-keys block'
-                                                                    [:generated?
-                                                                     :output-index
-                                                                     :output-text-id]))))))
-                    block')
-                  block0)
+    (let [block block0
           new-epoch (inc (or (:epoch block) 0))
           _ (swap! session update-block client-id index
-                   #(assoc % :epoch new-epoch :generated? false))
+                   #(assoc % :epoch new-epoch))
           [tasks n1] (core/eval-cells [(message (:text-id block) text)]
                                       (:network @session))
           n2 (core/run-tasks tasks n1)]
       (swap! session assoc :network n2)
+      (when-not (some? (:order block))
+        (swap! session assign-source-order client-id index))
       (rebuild-program! session)
       {:client-id client-id
        :index index})))
 
-(defn sync-tui-block!
-  [session {:keys [client-id index from trace-id]}]
-  (let [tui (tui! session client-id)
-        block (some #(when (= index (:index %)) %) (:blocks tui))]
-    (when-not block
-      (throw (ex-info "block not found" {:client-id client-id :index index})))
-    (if trace-id
-      (do
-        (swap! session assoc-in [:tuis client-id :blocks]
-               (mapv #(if (= index (:index %))
-                        (assoc % :trace-id trace-id)
-                        %)
-                     (:blocks tui)))
-        {:client-id client-id :index index :trace-id trace-id})
-      (let [v (read-program-cell @session from)]
-        (when (or (nil? v) (value/unusable? v))
-          (throw (ex-info "cell not found" from)))
-        (swap! session write-block-value block (:program/epoch @session) v)
-        {:client-id client-id
-         :index index
-         :from from}))))
+(defn submit-tui-block!
+  [session {:keys [client-id text]}]
+  (let [view (read-tui-view @session {:client-id client-id})
+        current-index (input-view-block-index view)
+        has-current? (= current-index (some-> (:blocks view) peek :index))]
+    (when-not has-current?
+      (append-tui-block! session {:client-id client-id :rebuild? false}))
+    (append-tui-block! session {:client-id client-id :rebuild? false})
+    (edit-tui-block! session {:client-id client-id
+                              :index current-index
+                              :text text})
+    (let [view (read-tui-view @session {:client-id client-id})]
+      (when-not (and (seq (:blocks view))
+                     (= value/nothing (-> view :blocks peek :value))
+                     (not (-> view :blocks peek :referenced?)))
+        (append-tui-block! session {:client-id client-id :rebuild? false})))
+    (read-tui-view @session {:client-id client-id})))
 
 (defn- block-value
   [state block]
-  (if-let [trace-id (:trace-id block)]
-    (get-in (read-installed-trace state {:trace-id trace-id}) [:graph])
-    (net/network-cell-strongest (:network state) (:text-id block))))
+  (net/network-cell-strongest (:network state) (:text-id block)))
+
+(defn- block-at-target-indexes
+  [source]
+  (try
+    (let [form (compiler-parser/read-form source)]
+      (into #{}
+            (keep (fn [x]
+                    (when (and (seq? x)
+                               (= 'block-at (first x)))
+                      (let [[_ _ index] x]
+                        (when (integer? index)
+                          index)))))
+            (tree-seq coll? seq form)))
+    (catch Throwable _
+      #{})))
+
+(defn- referenced-block-indexes
+  [state blocks]
+  (reduce (fn [indexes block]
+            (let [v (block-value state block)]
+              (if (string? v)
+                (into indexes (block-at-target-indexes v))
+                indexes)))
+          #{}
+          blocks))
 
 (defn read-tui-view
   [state {:keys [client-id]}]
   (let [tui (get-in (require-state state) [:tuis client-id])]
     (when-not tui
       (throw (ex-info "tui client not found" {:client-id client-id})))
-    {:client-id client-id
-     :view-id (pr-str (:view-id tui))
-     :blocks (mapv (fn [block]
-                     {:index (:index block)
-                      :block-id (pr-str (:block-id block))
-                      :text-id (pr-str (:text-id block))
-                      :value (block-value state block)})
-                   (:blocks tui))}))
+    (let [referenced-indexes (referenced-block-indexes state (:blocks tui))]
+      {:client-id client-id
+       :view-id (pr-str (:view-id tui))
+       :blocks (mapv (fn [block]
+                       {:index (:index block)
+                        :block-id (pr-str (:block-id block))
+                        :text-id (pr-str (:text-id block))
+                        :referenced? (contains? referenced-indexes
+                                                (:index block))
+                        :value (block-value state block)})
+                     (:blocks tui))})))
 
 (defn unregister-tui!
   [session {:keys [client-id]}]
@@ -806,24 +884,25 @@
 (defn handle-command!
   [session {:keys [op source] :as command}]
   (try
-    {:ok true
-     :result
-     (case op
-       :tui/register (register-tui! session command)
-       :tui/append-block (append-tui-block! session command)
-       :tui/edit-block (edit-tui-block! session command)
-       :tui/sync-block (sync-tui-block! session command)
-       :tui/read-view (read-tui-view @session command)
-       :tui/unregister (unregister-tui! session command)
-       :compile/source (compile-source! session source)
-       :cells/list (list-cells @session)
-       :cell/read (read-cell @session command)
-       :semantic/graph (:graph (require-state @session))
-       :semantic/trace (semantic-trace @session command)
-       :semantic/trace/install (install-semantic-trace! session command)
-       :semantic/trace/read (read-installed-trace @session command)
-       :semantic/trace/stop (stop-installed-trace! session command)
-       (throw (ex-info "unknown runtime op" {:op op})))}
+    (locking session
+      {:ok true
+       :result
+       (case op
+         :tui/register (register-tui! session command)
+         :tui/append-block (append-tui-block! session command)
+         :tui/edit-block (edit-tui-block! session command)
+         :tui/submit-block (submit-tui-block! session command)
+         :tui/read-view (read-tui-view @session command)
+         :tui/unregister (unregister-tui! session command)
+         :compile/source (compile-source! session source)
+         :cells/list (list-cells @session)
+         :cell/read (read-cell @session command)
+         :semantic/graph (:graph (require-state @session))
+         :semantic/trace (semantic-trace @session command)
+         :semantic/trace/install (install-semantic-trace! session command)
+         :semantic/trace/read (read-installed-trace @session command)
+         :semantic/trace/stop (stop-installed-trace! session command)
+         (throw (ex-info "unknown runtime op" {:op op})))})
     (catch Throwable t
       {:ok false
        :error (ex-message t)

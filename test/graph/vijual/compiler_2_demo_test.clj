@@ -49,7 +49,8 @@
           graph (:graph semantic-main)
           labels (graph-labels graph)
           edges (graph-label-edges graph)]
-      (is (= #{"inc-local" ":: [x]" "<->" "call inc-local" "5" "result"}
+      (is (= #{"inc-local" ":: [x]" "<->" "app:<->"
+               "call inc-local" "app:inc-local" "5" "result"}
              labels))
       (is (contains? edges ["inc-local" "<->"]))
       (is (contains? edges [":: [x]" "<->"]))
@@ -67,7 +68,7 @@
           graph (:graph semantic-closure)
           labels (graph-labels graph)
           edges (graph-label-edges graph)]
-      (is (= #{"x" "1" "+" "output"} labels))
+      (is (= #{"x" "1" "+" "app:+" "output"} labels))
       (is (contains? edges ["x" "+"]))
       (is (contains? edges ["1" "+"]))
       (is (contains? edges ["+" "output"])))))

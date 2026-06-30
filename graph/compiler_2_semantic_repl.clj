@@ -6,6 +6,7 @@
             [propagators.compiler-2.ast :as ast]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.ids :as ids]
             [propagators.network :as net]))
 
 (def stress-opts
@@ -270,9 +271,13 @@
     {:nodes (:nodes state)
      :node-aliases (into {}
                          (keep (fn [[k node-id]]
-                                 (when (and (vector? k)
-                                            (= :cell (first k)))
-                                   [(second k) node-id])))
+                                 (cond
+                                   (and (vector? k)
+                                        (= :cell (first k)))
+                                   [(second k) node-id]
+
+                                   (ids/node-id? k)
+                                   [k node-id])))
                          (:key->id state))
      :values (:values state)
      :edges (vec (distinct (:edges state)))}))
@@ -282,8 +287,8 @@
   (let [semantic (application-graph compiled network)
         structural (structural-graph compiled network)]
     {:nodes (merge (:nodes semantic) (:nodes structural))
-     :node-aliases (merge (:node-aliases semantic)
-                          (:node-aliases structural))
+     :node-aliases (merge (:node-aliases structural)
+                          (:node-aliases semantic))
      :values (merge (:values semantic) (:values structural))
      :edges (vec (distinct (concat (:edges semantic) (:edges structural))))}))
 

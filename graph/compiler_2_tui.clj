@@ -38,6 +38,17 @@
          (str "graph render error: " (ex-message t))))
      (str value))))
 
+(defn- blank-block?
+  [{:keys [value referenced?]}]
+  (and (= :bool4/nothing value)
+       (not referenced?)))
+
+(defn- visible-blocks
+  [blocks]
+  (if (blank-block? (peek blocks))
+    (pop (vec blocks))
+    blocks))
+
 (defn render-view
   ([view] (render-view view nil))
   ([{:keys [blocks]} viewport-size]
@@ -45,7 +56,7 @@
     "\n\n"
     (map (fn [{:keys [index value]}]
            (str "[" index "]\n" (render-value value viewport-size)))
-         blocks))))
+         (visible-blocks blocks)))))
 
 (def ^:private viewport-keys
   {:line-up ["up"]
@@ -83,11 +94,48 @@
   (let [vp0 (:viewport state)
         vp1 (if (= content (viewport/viewport-content vp0))
               vp0
-              (viewport/viewport-set-content vp0 content))
+              (viewport/viewport-scroll-to
+               (viewport/viewport-set-content vp0 content)
+               (:y-offset vp0 0)))
         vp2 (viewport/viewport-set-dimensions vp1
                                                (viewport-width state)
                                                (viewport-height state))]
     (assoc state :viewport vp2)))
+
+(defn- resize-viewport
+  [state]
+  (configure-viewport state (viewport/viewport-content (:viewport state))))
+
+(def ^:private resize-render-delay-ms 120)
+
+(defn- resize-render-cmd
+  [window-size]
+  (program/cmd
+   (fn []
+     (Thread/sleep resize-render-delay-ms)
+     {:type :runtime/resize-render
+      :window-size window-size})))
+
+(defn- next-block-index
+  [view]
+  (or (some->> (:blocks view)
+               (map :index)
+               seq
+               (apply max)
+               inc)
+      0))
+
+(defn- input-block-index
+  [view]
+  (let [blocks (:blocks view)]
+    (if (blank-block? (peek blocks))
+      (:index (peek blocks))
+      (next-block-index view))))
+
+(defn- update-input-prompt
+  [state]
+  (assoc-in state [:input :prompt]
+            (str "[" (input-block-index (:view state)) "]> ")))
 
 (defn poll-view
   [host port client-id]
@@ -118,15 +166,13 @@
       :response (poll-view host port client-id)})))
 
 (defn append-cmd
-  [{:keys [host port client-id input]}]
+  [{:keys [host port client-id input view]}]
   (program/cmd
    (fn []
      {:type :runtime/view
-      :response (do
-                  (server/request host port {:op :tui/append-block
-                                             :client-id client-id
-                                             :text (text-input/value input)})
-                  (poll-view host port client-id))})))
+      :response (server/request host port {:op :tui/submit-block
+                                           :client-id client-id
+                                           :text (text-input/value input)})})))
 
 (defn update-fn
   [state message]
@@ -138,9 +184,17 @@
     (= :runtime/view (:type message))
     (let [response (:response message)]
       (if (:ok response)
-        (let [state' (assoc state :view (:result response) :error nil)
-              content (render-view (:result response) (viewport-size state'))]
-          [(configure-viewport state' content) (refresh-cmd state')])
+        (let [view (:result response)
+              view-changed? (not= view (:view state))
+              state' (update-input-prompt
+                      (assoc state :view view :error nil))
+              state'' (if (:resize/target state')
+                        state'
+                        (configure-viewport
+                         state'
+                         (render-view view (viewport-size state'))))]
+          [state''
+           (refresh-cmd state')])
         [(configure-viewport (assoc state :error (:error response))
                              (or (some-> (:view state)
                                          (render-view (viewport-size state)))
@@ -153,12 +207,26 @@
       [(update state :input text-input/reset) (append-cmd state)])
 
     (msg/window-size? message)
-    (let [state' (assoc state :window-size (select-keys message [:width :height]))]
-      [(configure-viewport state'
-                           (or (some-> (:view state')
-                                       (render-view (viewport-size state')))
-                               ""))
-       nil])
+    (let [window-size (select-keys message [:width :height])
+          state' (assoc state
+                        :window-size window-size
+                        :resize/target window-size
+                        :resize/suppress? true)]
+      [state'
+       (resize-render-cmd window-size)])
+
+    (= :runtime/resize-render (:type message))
+    (let [window-size (:window-size message)]
+      (if (= window-size (:resize/target state))
+        [(-> state
+             (dissoc :resize/target)
+             (dissoc :resize/suppress?)
+             (configure-viewport
+              (or (some-> (:view state)
+                          (render-view (viewport-size state)))
+                  "")))
+         nil]
+        [state nil]))
 
     :else
     (let [[vp vp-cmd] (viewport/viewport-update (:viewport state) message)]
@@ -168,12 +236,14 @@
           [(assoc state :input input) cmd])))))
 
 (defn view
-  [{:keys [client-id input viewport error]}]
-  (str "compiler-2 " client-id "\n"
-       "enter appends, arrows/page/home/end scroll, q quits\n\n"
-       (when error (str "error: " error "\n\n"))
-       (viewport/viewport-view viewport)
-       "\n\n" (text-input/text-input-view input)))
+  [{:keys [client-id input viewport error resize/suppress?]}]
+  (if suppress?
+    ""
+    (str "compiler-2 " client-id "\n"
+         "enter appends, arrows/page/home/end scroll, q quits\n\n"
+         (when error (str "error: " error "\n\n"))
+         (viewport/viewport-view viewport)
+         "\n\n" (text-input/text-input-view input))))
 
 (defn run-client
   [{:keys [host port client-id poll-ms]
