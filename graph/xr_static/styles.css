@@ -1,0 +1,126 @@
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #000;
+  color: #fff;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+#viewport {
+  min-width: 0;
+  min-height: 0;
+}
+
+#panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-left: 1px solid #333;
+  background: #050505;
+  padding: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #d7d7d7;
+  font-size: 12px;
+}
+
+input,
+textarea,
+button,
+pre {
+  border: 1px solid #39434f;
+  border-radius: 6px;
+  background: #000;
+  color: #fff;
+  font: inherit;
+}
+
+input,
+textarea {
+  padding: 8px;
+}
+
+textarea {
+  min-height: 130px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+button {
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #181818;
+}
+
+#status {
+  color: #fff;
+  font-size: 12px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+}
+
+.segmented button {
+  border-radius: 0;
+}
+
+.segmented button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.segmented button:last-child {
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+}
+
+.segmented button.active {
+  background: #fff;
+  color: #000;
+}
+
+#selection {
+  min-height: 90px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+@media (max-width: 780px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  #panel {
+    border-left: 0;
+    border-top: 1px solid #2b333c;
+  }
+}

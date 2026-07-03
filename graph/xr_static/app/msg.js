@@ -1,0 +1,17 @@
+export const Msg = {
+  SocketOpen: () => ({ type: "socket/open" }),
+  SocketClosed: () => ({ type: "socket/closed" }),
+  SocketError: (error) => ({ type: "socket/error", error }),
+  SocketMessage: (payload) => ({ type: "socket/message", payload }),
+  InstallTrace: (label) => ({ type: "trace/install", label }),
+  ExtendGraph: (source) => ({ type: "graph/extend", source }),
+  SendValue: (value) => ({ type: "cell/send-value", value }),
+  SetViewMode: (mode) => ({ type: "view/mode", mode }),
+  Tick: (dt) => ({ type: "tick", dt }),
+  SelectNode: (id) => ({ type: "select/node", id }),
+  Pinch: (point, at = 0) => ({ type: "xr/pinch", point, at }),
+  XrReady: (ready) => ({ type: "xr/ready", ready }),
+  EnterXr: () => ({ type: "xr/enter" }),
+  XrEntered: () => ({ type: "xr/entered" }),
+  XrError: (error) => ({ type: "xr/error", error }),
+};

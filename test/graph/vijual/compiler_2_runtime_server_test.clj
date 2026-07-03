@@ -29,11 +29,14 @@
   (let [session (runtime/new-session)
         graph (runtime/compile-source! session source)
         trace (runtime/semantic-trace @session {:label "next"
-                                                :direction :upstream})]
-    (is (= "4" (get (semantic-repl/value-labels graph) "x")))
+                                                :direction :upstream})
+        expansion (semantic-repl/expansion trace {:label "call :: [x]"})]
+    (is (= "4" (get (semantic-repl/value-labels expansion) "x")))
     (is (= "5" (get (semantic-repl/value-labels graph) "next")))
-    (is (contains? (set (semantic-repl/edge-labels trace)) ["+" "<->"]))
-    (is (contains? (set (semantic-repl/edge-labels trace)) ["x" "+"]))))
+    (is (contains? (set (semantic-repl/edge-labels trace)) ["4" "call :: [x]"]))
+    (is (contains? (set (semantic-repl/edge-labels trace)) ["call :: [x]" "next"]))
+    (is (contains? (set (semantic-repl/edge-labels expansion)) ["+" "<->"]))
+    (is (contains? (set (semantic-repl/edge-labels expansion)) ["x" "+"]))))
 
 (deftest downstream-trace-expands-monotonically-on-epoch
   (let [request-id (ids/new-node-id)
@@ -628,11 +631,14 @@
                                                 g)"})
     (let [b-view (runtime/read-tui-view @session {:client-id "b"})
           trace (get-in b-view [:blocks 0 :value])
+          expansion (semantic-repl/expansion trace {:label "call inc1"})
           rendered (tui/render-view b-view)]
       (is (tui/graph-value? trace))
-      (is (contains? (set (semantic-repl/edge-labels trace)) ["+" "<->"]))
+      (is (contains? (set (semantic-repl/edge-labels trace)) ["4" "call inc1"]))
+      (is (contains? (set (semantic-repl/edge-labels trace)) ["call inc1" "next"]))
+      (is (contains? (set (semantic-repl/edge-labels expansion)) ["+" "<->"]))
       (is (= "5" (get (semantic-repl/value-labels trace) "next")))
-      (is (str/includes? rendered "+"))
+      (is (str/includes? rendered "call inc1"))
       (is (str/includes? rendered "next")))))
 
 (deftest block-language-traces-def-net-application-dependence-graph
@@ -652,11 +658,14 @@
                                         g)"})
     (let [view (runtime/read-tui-view @session {:client-id "tui-a"})
           trace (get-in view [:blocks 1 :value])
-          edges (set (semantic-repl/edge-labels trace))]
+          edges (set (semantic-repl/edge-labels trace))
+          expansion (semantic-repl/expansion trace {:label "call inc"})
+          expansion-edges (set (semantic-repl/edge-labels expansion))]
       (is (tui/graph-value? trace))
-      (is (contains? edges ["x" "+"]))
-      (is (contains? edges ["+" "<->"]))
-      (is (contains? edges ["next" "out"]))
+      (is (contains? edges ["4" "call inc"]))
+      (is (contains? edges ["call inc" "out"]))
+      (is (contains? expansion-edges ["x" "+"]))
+      (is (contains? expansion-edges ["+" "<->"]))
       (is (not-any? #(= "slot block/text" %) (mapcat identity edges))))))
 
 (deftest cross-session-block-at-writes-only-target-block
@@ -695,12 +704,14 @@
               trace (server/request server/default-host port
                                     {:op :semantic/trace
                                      :label "next"
-                                     :direction :upstream})]
+                                     :direction :upstream})
+              expansion (semantic-repl/expansion (:result trace)
+                                                 {:label "call :: [x]"})]
           (is (:ok cells))
           (is (some #(= "result" (:label %)) (:result cells)))
-          (is (= "4" (get (semantic-repl/value-labels (:result graph)) "x")))
+          (is (= "4" (get (semantic-repl/value-labels expansion) "x")))
           (is (contains? (set (semantic-repl/edge-labels (:result trace)))
-                         ["+" "<->"]))))
+                         ["call :: [x]" "next"]))))
       (testing "installed tracer can be read by another client"
         (let [installed (server/request server/default-host port
                                         {:op :semantic/trace/install
@@ -710,10 +721,12 @@
               trace-id (get-in installed [:result :trace-id])
               read-back (server/request server/default-host port
                                         {:op :semantic/trace/read
-                                         :trace-id trace-id})]
+                                         :trace-id trace-id})
+              expansion (semantic-repl/expansion (get-in read-back [:result :graph])
+                                                 {:label "call :: [x]"})]
           (is (:ok installed))
           (is (:ok read-back))
-          (is (contains? (set (semantic-repl/edge-labels (get-in read-back [:result :graph])))
+          (is (contains? (set (semantic-repl/edge-labels expansion))
                          ["+" "<->"]))
           (is (:ok (server/request server/default-host port
                                    {:op :semantic/trace/stop

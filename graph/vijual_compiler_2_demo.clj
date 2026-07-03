@@ -10,6 +10,7 @@
             [propagators.cells.value :as value]
             [propagators.datastructures.compound-object :as obj]
             [propagators.graph :as pgraph]
+            [propagators.ids :as ids]
             [propagators.network :as net]
             [propagators.network-builder :as nb]))
 
@@ -313,16 +314,22 @@
 (defn semantic-label [labels id]
   (or (get labels id) "cell"))
 
+(defn semantic-key [key]
+  (if (ids/node-id? key)
+    [:cell key]
+    key))
+
 (defn semantic-node
   [state key label]
-  (if-let [id (get-in state [:key->id key])]
-    [state id]
-    (let [id (keyword (str "sem" (:next-id state)))]
-      [(-> state
-           (update :next-id inc)
-           (assoc-in [:key->id key] id)
-           (assoc-in [:nodes id] label))
-       id])))
+  (let [key (semantic-key key)]
+    (if-let [id (get-in state [:key->id key])]
+      [state id]
+      (let [id (keyword (str "sem" (:next-id state)))]
+        [(-> state
+             (update :next-id inc)
+             (assoc-in [:key->id key] id)
+             (assoc-in [:nodes id] label))
+         id]))))
 
 (defn semantic-edge
   [state from-key from-label to-key to-label]
@@ -341,6 +348,16 @@
         (semantic-edge right right-label sync-key sync-label)
         (semantic-edge sync-key sync-label left left-label)
         (semantic-edge sync-key sync-label right right-label))))
+
+(defn add-forward-sync-semantic [state labels {:keys [app-id arg-cells]}]
+  (let [[source target] arg-cells
+        sync-key [:forward-sync app-id]
+        sync-label "->"
+        source-label (semantic-label labels source)
+        target-label (semantic-label labels target)]
+    (-> state
+        (semantic-edge [:cell source] source-label sync-key sync-label)
+        (semantic-edge sync-key sync-label [:cell target] target-label))))
 
 (defn add-call-semantic [state labels {:keys [app-id operator-label operator-cell arg-cells output-id]}]
   (let [call-key [:call app-id]
@@ -390,16 +407,18 @@
       (semantic-edge state app-key app-label output-id output-label))))
 
 (defn add-application-semantic [state labels {:keys [operator-label lowering] :as app}]
-  (let [state (add-application-node-semantic state labels app)]
-    (cond
-      (= "<->" operator-label)
-      (add-sync-semantic state labels app)
+  (cond
+    (= "<->" operator-label)
+    (add-sync-semantic state labels app)
 
-      (= :closure-cell lowering)
-      (add-call-semantic state labels app)
+    (= "->" operator-label)
+    (add-forward-sync-semantic state labels app)
 
-      :else
-      (add-operator-semantic state labels app))))
+    (= :closure-cell lowering)
+    (add-call-semantic state labels app)
+
+    :else
+    (add-operator-semantic state labels app)))
 
 (defn semantic-graph
   ([compiled n]

@@ -1,5 +1,7 @@
 (ns graph.compiler-2-semantic-repl
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.set :as set]
+            [clojure.string :as str]
             [graph.vijual :as v]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.value :as value]
@@ -64,6 +66,50 @@
         (str (subs s 0 200) "...")
         s))))
 
+(defn- alias-node-set
+  [v]
+  (cond
+    (nil? v) #{}
+    (set? v) v
+    (sequential? v) (set v)
+    :else #{v}))
+
+(defn- merge-node-aliases
+  [& aliases]
+  (apply merge-with
+         set/union
+         (map (fn [alias-map]
+                (into {}
+                      (map (fn [[k v]] [k (alias-node-set v)]))
+                      alias-map))
+              aliases)))
+
+(defn- runtime-cell-id
+  [key]
+  (cond
+    (ids/node-id? key) key
+    (and (vector? key)
+         (= :cell (first key))) (second key)
+    :else nil))
+
+(defn- state-node-aliases
+  [state]
+  (reduce-kv
+   (fn [aliases key node-id]
+     (if-let [cell-id (runtime-cell-id key)]
+       (update aliases cell-id (fnil conj #{}) node-id)
+       aliases))
+   {}
+   (:key->id state)))
+
+(defn- graph-from-state
+  [state]
+  {:nodes (:nodes state)
+   :node-aliases (state-node-aliases state)
+   :values (:values state)
+   :expansions (:expansions state)
+   :edges (vec (distinct (:edges state)))})
+
 (defn- annotate-node
   [state node-id v]
   (if-let [label (display-cell-value v)]
@@ -82,27 +128,29 @@
 (defn- structural-graph
   [compiled n]
   (let [labels (demo/compiled-labels compiled n)]
-    (reduce
-     (fn [state {:keys [collection-id slot-key parent-id]}]
-       (let [[state collection-node] (ensure-node state
-                                                  [:cell collection-id]
-                                                  (label labels collection-id))
-             [state slot-node] (ensure-node state
-                                            [:slot collection-id slot-key]
-                                            (str "slot " (demo/display-name slot-key)))
-             [state parent-node] (ensure-node state
-                                              [:cell parent-id]
-                                              (label labels parent-id))
-             state (annotate-node state
-                                  parent-node
-                                  (net/network-cell-strongest n parent-id))]
-         (update state :edges conj [collection-node slot-node] [slot-node parent-node])))
-    {:next-id 0
-      :key->id {}
-      :nodes {}
-      :values {}
-      :edges []}
-     (declaration-records n))))
+    (graph-from-state
+     (reduce
+      (fn [state {:keys [collection-id slot-key parent-id]}]
+        (let [[state collection-node] (ensure-node state
+                                                   [:cell collection-id]
+                                                   (label labels collection-id))
+              [state slot-node] (ensure-node state
+                                             [:slot collection-id slot-key]
+                                             (str "slot " (demo/display-name slot-key)))
+              [state parent-node] (ensure-node state
+                                               [:cell parent-id]
+                                               (label labels parent-id))
+              state (annotate-node state
+                                   parent-node
+                                   (net/network-cell-strongest n parent-id))]
+          (update state :edges conj [collection-node slot-node] [slot-node parent-node])))
+      {:next-id 0
+       :key->id {}
+       :nodes {}
+       :values {}
+       :expansions {}
+       :edges []}
+      (declaration-records n)))))
 
 (defn- output-symbols
   [output]
@@ -143,6 +191,18 @@
          (add-edge sync-key sync-label (:key left) (:label left))
          (add-edge sync-key sync-label (:key right) (:label right)))
      right]))
+
+(defn- add-forward-sync-semantics
+  [state env app-id path args]
+  (let [[source-expr target-expr] args
+        sync-key [:closure app-id :forward-sync path]
+        sync-label "->"
+        [state source] (add-expr-semantics state env app-id (conj path 0) source-expr)
+        [state target] (add-expr-semantics state env app-id (conj path 1) target-expr)]
+    [(-> state
+         (add-edge (:key source) (:label source) sync-key sync-label)
+         (add-edge sync-key sync-label (:key target) (:label target)))
+     target]))
 
 (defn- add-operator-semantics
   [state env app-id path operator-label args]
@@ -187,8 +247,14 @@
       (let [operator (ast/operator expr)
             operator-label (demo/ast-label operator)
             args (ast/args expr)]
-        (if (= "<->" operator-label)
+        (cond
+          (= "<->" operator-label)
           (add-sync-semantics state env app-id path args)
+
+          (= "->" operator-label)
+          (add-forward-sync-semantics state env app-id path args)
+
+          :else
           (add-operator-semantics state env app-id path operator-label args)))
 
       (let [{:keys [key label] :as entry} (expr-entry env expr)
@@ -202,7 +268,7 @@
       v)))
 
 (defn- closure-env
-  [n {:keys [app-id arg-cells output-id]} closure-info]
+  [n labels {:keys [app-id arg-cells output-id]} closure-info]
   (let [inputs (closure-value/closure-inputs closure-info)
         outputs (output-symbols (closure-value/closure-output closure-info))]
     (merge
@@ -214,8 +280,8 @@
            (map vector inputs (take (count inputs) arg-cells)))
      (into {}
            (map (fn [[sym arg-id]]
-                  [sym {:key [:closure app-id :output sym]
-                        :label (demo/display-name sym)
+                  [sym {:key [:cell arg-id]
+                        :label (label labels arg-id)
                         :value (net/network-cell-strongest n arg-id)}]))
            (map vector outputs (drop (count inputs) arg-cells))))))
 
@@ -245,14 +311,80 @@
      state
      (map vector outputs (drop input-count arg-cells)))))
 
+(defn- closure-output-cells
+  [{:keys [arg-cells output-id]} closure-info]
+  (let [input-count (count (closure-value/closure-inputs closure-info))
+        outputs (vec (drop input-count arg-cells))]
+    (if (seq outputs)
+      outputs
+      [output-id])))
+
+(defn- closure-call-label
+  [labels {:keys [operator-label operator-cell]}]
+  (str "call " (let [label (label labels operator-cell)]
+                 (if (= "cell" label) operator-label label))))
+
+(defn- annotate-cell
+  [state n labels cell-id]
+  (first
+   (ensure-semantic-node state {:key [:cell cell-id]
+                                :label (label labels cell-id)
+                                :value (net/network-cell-strongest n cell-id)})))
+
+(declare expansion-graph)
+
+(defn- add-collapsed-closure-semantics
+  [state n labels {:keys [app-id arg-cells] :as app} closure-info]
+  (let [input-count (count (closure-value/closure-inputs closure-info))
+        input-cells (take input-count arg-cells)
+        output-cells (closure-output-cells app closure-info)
+        call-key [:call app-id]
+        call-label (closure-call-label labels app)
+        [state call-node-id] (demo/semantic-node state call-key call-label)
+        expansion (expansion-graph n labels app closure-info)]
+    (as-> (assoc-in state [:expansions call-node-id] expansion) state
+      (reduce (fn [state cell-id]
+                (annotate-cell state n labels cell-id))
+              state
+              (concat input-cells output-cells))
+      (reduce (fn [state arg-id]
+                (add-edge state
+                          [:cell arg-id]
+                          (label labels arg-id)
+                          call-key
+                          call-label))
+              state
+              input-cells)
+      (reduce (fn [state out-id]
+                (add-edge state
+                          call-key
+                          call-label
+                          [:cell out-id]
+                          (label labels out-id)))
+              state
+              output-cells))))
+
 (defn- add-inlined-closure-semantics
   [state n labels app closure-info]
   (let [state (add-input-bindings state labels app closure-info)
-        state (add-output-bindings state labels app closure-info)
-        env (closure-env n app closure-info)
+        env (closure-env n labels app closure-info)
         [state _] (add-expr-semantics state env (:app-id app) [:body]
                                       (closure-value/closure-body closure-info))]
     state))
+
+(defn- expansion-graph
+  [n labels app closure-info]
+  (graph-from-state
+   (add-inlined-closure-semantics {:next-id 0
+                                   :key->id {}
+                                   :nodes {}
+                                   :values {}
+                                   :expansions {}
+                                   :edges []}
+                                  n
+                                  labels
+                                  app
+                                  closure-info)))
 
 (defn- application-graph
   [compiled n]
@@ -260,37 +392,45 @@
         state (reduce
                (fn [state app]
                  (if-let [closure-info (closure-value n app)]
-                   (add-inlined-closure-semantics state n labels app closure-info)
+                   (add-collapsed-closure-semantics state n labels app closure-info)
                    (demo/add-application-semantic state labels app)))
                {:next-id 0
                 :key->id {}
                 :nodes {}
                 :values {}
+                :expansions {}
                 :edges []}
                (demo/application-records compiled n))]
-    {:nodes (:nodes state)
-     :node-aliases (into {}
-                         (keep (fn [[k node-id]]
-                                 (cond
-                                   (and (vector? k)
-                                        (= :cell (first k)))
-                                   [(second k) node-id]
-
-                                   (ids/node-id? k)
-                                   [k node-id])))
-                         (:key->id state))
-     :values (:values state)
-     :edges (vec (distinct (:edges state)))}))
+    (graph-from-state state)))
 
 (defn compiled-semantic-graph
   [compiled network]
   (let [semantic (application-graph compiled network)
         structural (structural-graph compiled network)]
     {:nodes (merge (:nodes semantic) (:nodes structural))
-     :node-aliases (merge (:node-aliases structural)
-                          (:node-aliases semantic))
+     :node-aliases (merge-node-aliases (:node-aliases structural)
+                                       (:node-aliases semantic))
      :values (merge (:values semantic) (:values structural))
+     :expansions (:expansions semantic)
      :edges (vec (distinct (concat (:edges semantic) (:edges structural))))}))
+
+(defn- parse-node-id
+  [node]
+  (cond
+    (string? node) (try
+                     (edn/read-string node)
+                     (catch Throwable _ node))
+    :else node))
+
+(defn expansion
+  [graph {:keys [node label]}]
+  (let [node (parse-node-id node)
+        node (or node
+                 (first (keep (fn [[node-id node-label]]
+                                (when (= label node-label)
+                                  node-id))
+                              (:nodes graph))))]
+    (get-in graph [:expansions node])))
 
 (defn semantic-graph
   [source]

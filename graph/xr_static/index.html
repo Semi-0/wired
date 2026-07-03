@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compiler-2 XR Graph</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="app">
+      <section id="viewport"></section>
+      <aside id="panel">
+        <h1>XR Graph</h1>
+        <div id="status">disconnected</div>
+        <label>
+          Trace label
+          <input id="trace-label" value="out" />
+        </label>
+        <button id="install-trace">Install trace</button>
+        <div class="segmented" aria-label="view mode">
+          <button id="view-3d" class="active">3D View</button>
+          <button id="view-xr">XR View</button>
+        </div>
+        <label>
+          Extend graph
+          <textarea id="source" spellcheck="false">(def out)
+(-> 42 out)</textarea>
+        </label>
+        <button id="extend-graph">Extend graph</button>
+        <label>
+          Message value
+          <input id="message-value" value="99" />
+        </label>
+        <button id="send-selected">Send to selected</button>
+        <pre id="selection">no selection</pre>
+      </aside>
+    </main>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.166.1/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module" src="/app/main.js"></script>
+  </body>
+</html>

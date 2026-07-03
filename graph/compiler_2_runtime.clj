@@ -31,6 +31,17 @@
 (defn- runtime-graph-id []
   (stable-node-id :runtime :semantic-graph))
 
+(defn- xr-outbox-id []
+  (stable-node-id :runtime :xr :outbox))
+
+(defn- receipt-slot-key
+  [effect-id]
+  (str "boundary/receipt:" (hash effect-id)))
+
+(defn- effect-slot-key
+  [effect-id]
+  (str "boundary/effect:" (hash effect-id)))
+
 (defn- daemon-executor
   [name]
   (Executors/newSingleThreadScheduledExecutor
@@ -58,18 +69,20 @@
      :block-order []
      :next-order 0
      :tuis {}
+     :xr {:launched {}}
      :graph graph}))
 
 (defn- empty-state []
   {:network net/empty-net
    :program/net net/empty-net
    :program/env (compiler-helpers/default-env)
-   :program/graph {:nodes {} :edges [] :values {}}
+   :program/graph {:nodes {} :edges [] :values {} :expansions {}}
    :program/results {}
    :program/epoch 0
    :block-order []
    :next-order 0
    :traces {}
+   :xr {:launched {}}
    :tuis {}})
 
 (defn- ensure-session-state! [session]
@@ -113,12 +126,26 @@
        (sort-by (juxt #(or (:label %) "") :cell-id))
        vec))
 
+(defn- matching-label?
+  [requested actual]
+  (and requested actual (= (str requested) (str actual))))
+
 (defn- resolve-cell-row
   [state {:keys [cell-id label]}]
   (let [cells (list-cells state)]
     (or (some #(when (= cell-id (:cell-id %)) %) cells)
-        (some #(when (= label (:label %)) %) cells)
+        (some #(when (matching-label? label (:label %)) %) cells)
         (throw (ex-info "cell not found" {:cell-id cell-id :label label})))))
+
+(defn- trace-cell-id-for-label
+  [state label]
+  (or (some-> (cenv/lookup (:program/env state) (symbol (str label)))
+              cenv/binding-id)
+      (some (fn [[id entry]]
+              (when (and (cell/cell? entry)
+                         (matching-label? label (get (labels state) id)))
+                id))
+            (net/net-env (:program/net state)))))
 
 (defn read-cell
   [state request]
@@ -185,21 +212,21 @@
       :else result)))
 
 (defn- empty-graph []
-  {:nodes {} :edges [] :values {}})
+  {:nodes {} :edges [] :values {} :expansions {}})
 
 (defn- namespace-graph
   [graph prefix]
-  (let [rename (fn [node-id]
-                 (if (keyword? node-id)
-                   (keyword (namespace node-id)
-                            (str prefix "/" (name node-id)))
-                   [prefix node-id]))
-        rename-alias (fn [v]
-                       (cond
-                         (nil? v) #{}
-                         (set? v) (set (map rename v))
-                         (sequential? v) (set (map rename v))
-                         :else #{(rename v)}))]
+  (letfn [(rename [node-id]
+            (if (keyword? node-id)
+              (keyword (namespace node-id)
+                       (str prefix "/" (name node-id)))
+              [prefix node-id]))]
+    (let [rename-alias (fn [v]
+                         (cond
+                           (nil? v) #{}
+                           (set? v) (set (map rename v))
+                           (sequential? v) (set (map rename v))
+                           :else #{(rename v)}))]
     (-> graph
         (update :nodes update-keys rename)
         (update :values update-keys rename)
@@ -207,10 +234,16 @@
                          (mapv (fn [[from to]]
                                  [(rename from) (rename to)])
                                edges)))
+        (update :expansions (fn [expansions]
+                              (into {}
+                                    (map (fn [[node-id expansion]]
+                                           [(rename node-id)
+                                            (namespace-graph expansion prefix)]))
+                                    expansions)))
         (update :node-aliases (fn [aliases]
                                 (into {}
                                       (map (fn [[k v]] [k (rename-alias v)]))
-                                      aliases))))))
+                                      aliases)))))))
 
 (defn- valid-client-id? [client-id]
   (and (string? client-id)
@@ -454,6 +487,80 @@
                       graph
                       request))])))}))
 
+(defn- xr-effect-request
+  [effect-id trace-graph receipt-id epoch]
+  {:boundary/effect true
+   :boundary/id effect-id
+   :boundary/port :xr
+   :boundary/kind :xr/launch-trace
+   :boundary/payload {:graph trace-graph}
+   :boundary/receipt-id receipt-id
+   :boundary/epoch epoch})
+
+(defn- xr-receipt
+  [request status]
+  {:boundary/receipt true
+   :boundary/id (:boundary/id request)
+   :boundary/port (:boundary/port request)
+   :boundary/kind (:boundary/kind request)
+   :boundary/status status
+   :boundary/epoch (:boundary/epoch request)})
+
+(defn- p:xr-io-request
+  [trace-id outbox-id receipt-id]
+  (prop/construct-propagator
+   (fn [_inputs _outputs network]
+     (let [trace-graph (net/network-cell-strongest network trace-id)
+           epoch (or (:program/epoch (net/net-dict-or-empty network)) 0)
+           effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
+       (if (or (value/unusable? trace-graph)
+               (not (semantic-trace/semantic-trace-graph? trace-graph)))
+         []
+         [(message outbox-id
+                   (obj/compound-object
+                    {(effect-slot-key effect-id)
+                     (xr-effect-request effect-id
+                                        trace-graph
+                                        receipt-id
+                                        epoch)}))])))
+   [trace-id]
+   [outbox-id]))
+
+(defn- xr-io-operator [outbox-id]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[trace-id maybe-receipt-id] (vec arg-ids)
+            receipt-id (or maybe-receipt-id out-id)]
+        (when-not (and trace-id receipt-id (#{1 2} (count arg-ids)))
+          (throw (ex-info "xr-io expects trace graph and optional receipt output"
+                          {:arg-ids arg-ids})))
+        (let [network* (-> network
+                           (nb/ensure-cell outbox-id)
+                           (nb/ensure-cell receipt-id))
+              [prop-id n] ((p:xr-io-request trace-id outbox-id receipt-id)
+                           network*)]
+          [n [prop-id] receipt-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (second (vec arg-ids)) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[trace-id maybe-receipt-id] (vec arg-ids)
+             receipt-id (or maybe-receipt-id out-id)
+             trace-graph (net/network-cell-strongest current-net trace-id)
+             epoch (or (:program/epoch (net/net-dict-or-empty current-net)) 0)
+             effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
+         (if (or (value/unusable? trace-graph)
+                 (not (semantic-trace/semantic-trace-graph? trace-graph)))
+           []
+           [(message outbox-id
+                     (obj/compound-object
+                      {(effect-slot-key effect-id)
+                       (xr-effect-request effect-id
+                                          trace-graph
+                                          receipt-id
+                                          epoch)}))])))}))
+
 (defn- all-blocks [state]
   (mapcat (fn [[client-id tui]]
             (map #(assoc % :client-id client-id) (:blocks tui)))
@@ -498,6 +605,7 @@
     (cenv/bind-at env 'block-at (block-at-operator) 0)
     (cenv/bind-at env 'instance (instance-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
+    (cenv/bind-at env 'xr-io (xr-io-operator (xr-outbox-id)) 0)
     (cenv/bind-at env 'translate (translate-operator) 0)
     (reduce-kv (fn [e client-id {:keys [instance-id]}]
                  (cenv/bind-at e
@@ -610,7 +718,8 @@
     (catch Throwable t
       (assoc-in state
                 [:program/results [(:client-id block) (:index block)]]
-                {:error (ex-message t)}))))
+                {:error (ex-message t)
+                 :data (ex-data t)}))))
 
 (defn- rebuild-block
   [state epoch block]
@@ -626,9 +735,14 @@
         source-blocks (source-blocks state)
         base (assoc state
                     :program/net (nb/install-cell
-                                  (seed-program-blocks
-                                   state
-                                   (seed-program-instances state net/empty-net))
+                                  (net/assoc-net-dict-entry
+                                   (nb/ensure-cell
+                                    (seed-program-blocks
+                                     state
+                                     (seed-program-instances state net/empty-net))
+                                    (xr-outbox-id))
+                                   :program/epoch
+                                   epoch)
                                   (runtime-graph-id)
                                   (semantic-trace/graph-union (empty-graph))
                                   (semantic-trace/graph-union (empty-graph)))
@@ -652,9 +766,81 @@
               s
               source-blocks))))
 
+(defn- outbox-effects
+  [program-net]
+  (if-not (contains? (net/net-env program-net) (xr-outbox-id))
+    []
+    (let [outbox (net/network-cell-strongest program-net (xr-outbox-id))]
+      (if (value/unusable? outbox)
+        []
+        (->> (obj/public-slot-keys outbox)
+             (keep (fn [slot-key]
+                     (let [request (obj/slot-value outbox slot-key)]
+                       (when (:boundary/effect request)
+                         request))))
+             vec)))))
+
+(defn- receipt-message
+  [request status]
+  (message (:boundary/receipt-id request)
+           (obj/compound-object
+            {(receipt-slot-key (:boundary/id request))
+             (xr-receipt request status)})))
+
+(defn- record-xr-launch
+  [state request]
+  (if (get-in state [:xr :launched (:boundary/id request)])
+    state
+    (let [receipt (receipt-message request :delivered)
+          [tasks program-net] (core/eval-cells [receipt] (:program/net state))]
+      (-> state
+          (assoc :program/net program-net)
+          (update-in [:xr :launched]
+                     (fnil assoc {})
+                     (:boundary/id request)
+                     {:request request
+                      :receipt (:value receipt)})
+          (update-in [:xr :effects]
+                     (fnil conj [])
+                     request)
+          (assoc :program/pending-after-effects tasks)))))
+
+(defn- graph-size
+  [request]
+  (let [graph (get-in request [:boundary/payload :graph])]
+    (+ (count (:nodes graph))
+       (count (:edges graph)))))
+
+(defn- delivery-key
+  [request]
+  [(:boundary/port request)
+   (:boundary/kind request)
+   (:boundary/receipt-id request)
+   (:boundary/epoch request)])
+
+(defn- collapse-boundary-effects
+  [requests]
+  (->> requests
+       (reduce (fn [acc request]
+                 (update acc
+                         (delivery-key request)
+                         (fn [old]
+                           (if (and old
+                                    (>= (graph-size old) (graph-size request)))
+                             old
+                             request))))
+               {})
+       vals))
+
+(defn- perform-boundary-effects
+  [state]
+  (reduce record-xr-launch
+          state
+          (collapse-boundary-effects (outbox-effects (:program/net state)))))
+
 (defn- rebuild-program!
   [session]
-  (swap! session rebuild-program-state)
+  (swap! session #(perform-boundary-effects (rebuild-program-state %)))
   @session)
 
 (defn- trace-via-propagator
@@ -681,8 +867,18 @@
 
 (defn- resolved-trace-request
   [state request]
-  (if (or (:label request) (:node request))
+  (cond
+    (:node request)
     request
+
+    (:label request)
+    (if-let [cell-id (trace-cell-id-for-label state (:label request))]
+      (-> request
+          (assoc :node cell-id)
+          (dissoc :label))
+      request)
+
+    :else
     (assoc request :label (:label (resolve-cell-row state request)))))
 
 (defn semantic-trace
@@ -690,6 +886,13 @@
   (let [state (require-state state)
         request* (resolved-trace-request state request)]
     (trace-via-propagator (:graph state) request*)))
+
+(defn semantic-expansion
+  [state request]
+  (let [graph (:graph (require-state state))]
+    (or (semantic-repl/expansion graph request)
+        (throw (ex-info "semantic expansion not found"
+                        (select-keys request [:node :label]))))))
 
 (defn- installed-trace-graph
   [trace]
@@ -977,6 +1180,11 @@
   {:client-id client-id
    :unregistered true})
 
+(defn read-xr-effects
+  [state]
+  {:effects (vec (get-in (require-state state) [:xr :effects] []))
+   :launched (vals (get-in state [:xr :launched] {}))})
+
 (defn handle-command!
   [session {:keys [op source] :as command}]
   (try
@@ -995,9 +1203,11 @@
          :cell/read (read-cell @session command)
          :semantic/graph (:graph (require-state @session))
          :semantic/trace (semantic-trace @session command)
+         :semantic/expand (semantic-expansion @session command)
          :semantic/trace/install (install-semantic-trace! session command)
          :semantic/trace/read (read-installed-trace @session command)
          :semantic/trace/stop (stop-installed-trace! session command)
+         :xr/effects (read-xr-effects @session)
          (throw (ex-info "unknown runtime op" {:op op})))})
     (catch Throwable t
       {:ok false
