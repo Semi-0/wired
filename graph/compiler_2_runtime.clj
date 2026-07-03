@@ -1,6 +1,7 @@
 (ns graph.compiler-2-runtime
   "Shared compiler-2 runtime session for socket clients."
-  (:require [graph.compiler-2-semantic-repl :as semantic-repl]
+  (:require [clojure.walk :as walk]
+            [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
@@ -655,11 +656,15 @@
   [source]
   (try
     (let [form (compiler-parser/read-form source)]
-      (if (and (seq? form)
-               (= 'trace (first form))
-               (symbol? (second form)))
-        (pr-str (cons 'trace (cons (name (second form)) (nnext form))))
-        source))
+      (pr-str
+       (walk/postwalk
+        (fn [form]
+          (if (and (seq? form)
+                   (= 'trace (first form))
+                   (symbol? (second form)))
+            (cons 'trace (cons (name (second form)) (nnext form)))
+            form))
+        form)))
     (catch Throwable _
       source)))
 

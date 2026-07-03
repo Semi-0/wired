@@ -345,3 +345,28 @@
       (is (= 1 (get labels "1" 0)))
       (is (<= 2 (get labels "a" 0)))
       (is (pos? (get labels "out2" 0))))))
+
+(deftest xr-io-trace-renders-topology-before-upstream-value-arrives
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def out)"
+                    "(def a)"
+                    "(-> (+ 1 a) out)"
+                    "(let-cell [g r]
+                       (trace out g)
+                       (xr-io g r)
+                       r)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (let [effects (:effects (:result (runtime/handle-command! session
+                                                               {:op :xr/effects})))
+          labels (->> effects
+                      last
+                      :boundary/payload
+                      :graph
+                      :nodes
+                      vals
+                      frequencies)]
+      (is (pos? (get labels "out" 0)))
+      (is (pos? (get labels "a" 0)))
+      (is (pos? (get labels "+" 0)))
+      (is (pos? (get labels "->" 0))))))
