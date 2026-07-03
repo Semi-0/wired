@@ -7,7 +7,6 @@
             [clojure.set :as set]
             [clojure.string :as str]
             [graph.compiler-2-runtime :as runtime]
-            [graph.compiler-2-runtime-server :as runtime-server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
@@ -341,4 +340,7 @@
 
 (defn request-runtime
   [host port command]
-  (runtime-server/request host port command))
+  ((requiring-resolve 'graph.compiler-2-runtime-server/request)
+   host
+   port
+   command))

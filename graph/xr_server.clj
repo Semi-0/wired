@@ -143,6 +143,10 @@
   [b]
   (bit-and b 0xff))
 
+(defn- signed-byte
+  [b]
+  (unchecked-byte b))
+
 (defn- read-length
   [^BufferedInputStream in len-code]
   (cond
@@ -170,8 +174,9 @@
         (dotimes [i len]
           (aset-byte payload
                      i
-                     (byte (bit-xor (unsigned-byte (aget payload i))
-                                    (unsigned-byte (aget mask-key (mod i 4))))))))
+                     (signed-byte
+                      (bit-xor (unsigned-byte (aget payload i))
+                               (unsigned-byte (aget mask-key (mod i 4))))))))
       {:opcode opcode
        :text (String. payload "UTF-8")})))
 
@@ -239,9 +244,52 @@
      TimeUnit/MILLISECONDS)
     #(.shutdownNow executor)))
 
+(defn- launch-effect-graph
+  [effect]
+  (when (and (= :xr (:boundary/port effect))
+             (= :xr/launch-trace (:boundary/kind effect)))
+    (get-in effect [:boundary/payload :graph])))
+
+(defn- latest-launch-effect-graph
+  [session]
+  (let [result (xr/handle-command! session {:op :xr/effects})]
+    (some launch-effect-graph (reverse (:effects result)))))
+
+(defn- start-effect-push!
+  [session out]
+  (let [interval-ms 500
+        last-graph (atom nil)
+        executor (daemon-executor "xr-effects")]
+    (try
+      (when-let [graph (latest-launch-effect-graph session)]
+        (reset! last-graph graph)
+        (locking out
+          (write-frame out
+                       (response "xr/effects/update"
+                                 {:ok true
+                                  :result {:graph (xr/graph->json graph)}}))))
+      (catch Throwable _ nil))
+    (.scheduleAtFixedRate
+     executor
+     (fn []
+       (try
+         (when-let [graph (latest-launch-effect-graph session)]
+           (when-not (= graph @last-graph)
+             (reset! last-graph graph)
+             (locking out
+               (write-frame out
+                            (response "xr/effects/update"
+                                      {:ok true
+                                       :result {:graph (xr/graph->json graph)}})))))
+         (catch Throwable _ nil)))
+     interval-ms
+     interval-ms
+     TimeUnit/MILLISECONDS)
+    #(.shutdownNow executor)))
+
 (defn- websocket-loop
   [session ^BufferedInputStream in ^BufferedOutputStream out]
-  (loop [stops []]
+  (loop [stops [(start-effect-push! session out)]]
     (let [{:keys [opcode text]} (read-frame in)]
       (case opcode
         8 (doseq [stop stops] (stop))
@@ -303,8 +351,9 @@
 
 (defn start-server
   ([] (start-server default-port))
-  ([port]
-   (let [session (runtime/new-session)
+  ([port] (start-server port (runtime/new-session)))
+  ([port session]
+   (let [session (or session (runtime/new-session))
          server (ServerSocket. port 50 (java.net.InetAddress/getByName default-host))
          running? (atom true)
          accept-thread

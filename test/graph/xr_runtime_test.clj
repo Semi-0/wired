@@ -2,13 +2,17 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime-server :as runtime-server]
             [graph.json :as json]
             [graph.xr-runtime :as xr]
+            [graph.xr-server :as xr-server]
             [propagators.compiler-2.env :as cenv]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.tms :as tms]
             [propagators.network :as net]
-            [propagators.semantic-trace :as semantic-trace]))
+            [propagators.semantic-trace :as semantic-trace])
+  (:import [java.io BufferedInputStream BufferedOutputStream
+            ByteArrayInputStream ByteArrayOutputStream]))
 
 (defn- cell-id
   [session label]
@@ -206,3 +210,86 @@
       (is (= :xr/launch-trace (get-in effects [:effects 0 :boundary/kind])))
       (is (= :delivered (:boundary/status receipt)))
       (is (= :xr (:boundary/port receipt))))))
+
+(deftest runtime-server-can-start-xr-with-shared-session
+  (let [server (runtime-server/start-server-with-xr 0 0)]
+    (try
+      (is (some? (:session server)))
+      (is (= (:session server) (get-in server [:xr :session])))
+      (is (pos? (:port server)))
+      (is (pos? (get-in server [:xr :port])))
+      (finally
+        ((:close server))))))
+
+(deftest runtime-server-starts-xr-lazily-when-xr-io-is-compiled
+  (let [server (runtime-server/start-server 0 0)
+        port (:port server)
+        request #(runtime-server/request runtime-server/default-host port %)]
+    (try
+      (is (nil? (:server @(:xr-state server))))
+      (request {:op :tui/register :client-id "A"})
+      (request {:op :tui/append-block :client-id "A" :text "(def a)"})
+      (request {:op :tui/append-block :client-id "A" :text "(<-> 42 a)"})
+      (request {:op :tui/append-block :client-id "A" :text "(def receipt)"})
+      (request {:op :tui/append-block
+                :client-id "A"
+                :text "(let-cell [g]
+                         (trace a g)
+                         (xr-io g receipt)
+                         receipt)"})
+      (let [xr (:server @(:xr-state server))]
+        (is (some? xr))
+        (is (= (:session server) (:session xr)))
+        (is (pos? (:port xr))))
+      (finally
+        ((:close server))))))
+
+(deftest websocket-read-frame-unmasks-high-bit-payload-bytes
+  (let [text "é"
+        payload (.getBytes text "UTF-8")
+        mask-key (byte-array [1 2 3 4])
+        masked (byte-array (map-indexed (fn [i b]
+                                          (unchecked-byte
+                                           (bit-xor (bit-and b 0xff)
+                                                    (bit-and (aget mask-key
+                                                                  (mod i 4))
+                                                             0xff))))
+                                        payload))
+        frame-bytes (byte-array (concat [0x81
+                                         (bit-or 0x80 (alength payload))]
+                                        (seq mask-key)
+                                        (seq masked)))
+        frame (#'xr-server/read-frame
+               (BufferedInputStream.
+                (ByteArrayInputStream. frame-bytes)))]
+    (is (= 1 (:opcode frame)))
+    (is (= text (:text frame)))))
+
+(deftest websocket-effect-push-sends-xr-io-launch-graph
+  (let [session (runtime/new-session)
+        bytes (ByteArrayOutputStream.)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def out)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(-> (+ 1 2) out)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def receipt)"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [g]
+               (trace out g)
+               (xr-io g receipt)
+               receipt)"})
+    (let [stop (#'xr-server/start-effect-push!
+                session
+                (BufferedOutputStream. bytes))]
+      (try
+        (stop)
+        (let [frame (#'xr-server/read-frame
+                     (BufferedInputStream.
+                      (ByteArrayInputStream. (.toByteArray bytes))))
+              payload (json/read-json (:text frame))]
+          (is (= "xr/effects/update" (:type payload)))
+          (is (true? (:ok payload)))
+          (is (seq (get-in payload [:result :graph :nodes]))))
+        (finally
+          (stop))))))
