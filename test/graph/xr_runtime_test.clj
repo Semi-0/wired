@@ -7,6 +7,7 @@
             [graph.xr-runtime :as xr]
             [graph.xr-server :as xr-server]
             [propagators.compiler-2.env :as cenv]
+            [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.tms :as tms]
             [propagators.network :as net]
@@ -90,6 +91,27 @@
                              @session
                              {:cell-id (pr-str (cell-id session "a"))}))))))
 
+(deftest xr-send-message-enters-runtime-commit-stage
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session {:op :xr/extend-graph :source "(def a)"})
+    (xr/handle-command! session
+                        {:op :xr/send-message
+                         :target {:label "a"}
+                         :message {:kind "value" :value 42}})
+    (is (= :xr/message
+           (-> @session :runtime/inputs peek :runtime/input)))
+    (is (= (cell-id session "a")
+           (-> @session :runtime/inputs peek :cell-id)))))
+
+(deftest tui-view-projection-is-pure
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(+ 1 2)"})
+    (let [state @session
+          projected (runtime/project-tui-view state {:client-id "A"})]
+      (is (= projected (runtime/project-tui-view state {:client-id "A"})))
+      (is (= state @session)))))
+
 (deftest xr-send-message-injects-behavior-event-content
   (let [session (runtime/new-session)]
     (xr/handle-command! session {:op :xr/extend-graph :source "(def events)"})
@@ -103,6 +125,27 @@
       (is (= 9 (obj/slot-value
                 (net/network-cell-strongest (:program/net @session) id)
                 6))))))
+
+(deftest xr-send-message-can-inject-latest-behavior-value
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session {:op :xr/extend-graph :source "(def behavior)"})
+    (let [id (cell-id session "behavior")]
+      (xr/handle-command! session
+                          {:op :xr/send-message
+                           :target {:label "behavior"}
+                           :message {:kind "behavior-latest"
+                                     :tick 1
+                                     :value 9}})
+      (xr/handle-command! session
+                          {:op :xr/send-message
+                           :target {:label "behavior"}
+                           :message {:kind "behavior-latest"
+                                     :tick 2
+                                     :value 11}})
+      (let [content (net/network-cell-content (:program/net @session) id)
+            current (behavior/strongest-value content)]
+        (is (= 11 (behavior/base-value current)))
+        (is (= 2 (count (behavior/history-records content))))))))
 
 (deftest xr-send-message-injects-distributed-tms-premise-fact
   (let [session (runtime/new-session)]

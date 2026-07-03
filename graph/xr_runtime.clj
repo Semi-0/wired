@@ -10,14 +10,11 @@
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
-            [propagators.core :as core]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.tms :as tms]
             [propagators.ids :as ids]
-            [propagators.message :as msg]
-            [propagators.network :as net]
-            [propagators.network-builder :as nb]))
+            [propagators.network :as net]))
 
 (def default-xr-client-id "xr")
 
@@ -243,15 +240,6 @@
     direction (assoc :direction direction)
     (:interval-ms command) (assoc :interval-ms (:interval-ms command)))))
 
-(defn- refresh-semantic-graph
-  [state]
-  (if (and (:compiled state) (:program/net state))
-    (assoc state
-           :graph
-           (semantic-repl/compiled-semantic-graph (:compiled state)
-                                                  (:program/net state)))
-    state))
-
 (defn xr-trace-install!
   [session command]
   (let [trace-id (str (random-uuid))
@@ -304,6 +292,11 @@
     :behavior-event
     (obj/compound-object {tick value})
 
+    "behavior-latest"
+    (behavior/retained-value :xr tick value #{[:xr tick]})
+    :behavior-latest
+    (behavior/retained-value :xr tick value #{[:xr tick]})
+
     "tms-premise"
     (tms/distributed-premise-update premise epoch active)
     :tms-premise
@@ -315,14 +308,12 @@
   [session {:keys [target message] :as command}]
   (let [state @session
         cell-id (resolve-cell-id state target)
-        update (message-update message)
-        n0 (nb/ensure-cell (:program/net state) cell-id)
-        cell-message (msg/message cell-id update)
-        [tasks n1] (core/eval-cells [cell-message] n0)
-        n2 (core/run-tasks tasks n1)]
-    (swap! session #(-> %
-                        (assoc :program/net n2)
-                        refresh-semantic-graph))
+        update (message-update message)]
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/message
+                                    :cell-id cell-id
+                                    :update update
+                                    :command command})
     {:target (runtime/read-cell @session {:cell-id (pr-str cell-id)})
      :graph (graph->json (:graph @session))
      :command command}))

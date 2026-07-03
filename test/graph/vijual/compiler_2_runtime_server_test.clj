@@ -166,16 +166,20 @@
       (is (true? (get-in view [:blocks 2 :referenced?])))
       (is (str/includes? rendered "[2]"))
       (is (str/includes? rendered ":bool4/nothing"))
-      (let [a-id (:binding/id (cenv/lookup (:program/env @session) 'a))
-            text-id (:text-id (nth (get-in @session [:tuis "A" :blocks]) 2))
-            [tasks n1] (core/eval-cells [(message a-id 7)]
-                                        (:program/net @session))
-            n2 (core/run-tasks tasks n1)
-            [tasks n3] (core/eval-cells [(message a-id 8)] n2)
-            n4 (core/run-tasks tasks n3)]
-        (is (= 7 (net/network-cell-strongest n2 text-id)))
+      (let [a-id (:binding/id (cenv/lookup (:program/env @session) 'a))]
+        (runtime/commit-runtime-input! session
+                                       {:runtime/input :cell-message
+                                        :cell-id a-id
+                                        :update 7})
+        (is (= 7 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                         [:blocks 2 :value])))
+        (runtime/commit-runtime-input! session
+                                       {:runtime/input :cell-message
+                                        :cell-id a-id
+                                        :update 8})
         (is (= :bool4/contradiction
-               (net/network-cell-strongest n4 text-id)))))))
+               (get-in (runtime/read-tui-view @session {:client-id "A"})
+                       [:blocks 2 :value])))))))
 
 (deftest block-at-application-is-traceable
   (let [session (runtime/new-session)]

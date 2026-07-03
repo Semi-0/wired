@@ -4,7 +4,9 @@
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell :as cell]
+            [propagators.cells.cell-protocol :as cell-protocol]
             [propagators.cells.value :as value]
+            [propagators.compile :as compile1]
             [propagators.compiler-2.application :as compiler-app]
             [propagators.compiler-2.env :as cenv]
             [propagators.compiler-2.helpers :as compiler-helpers]
@@ -36,6 +38,9 @@
 (defn- xr-outbox-id []
   (stable-node-id :runtime :xr :outbox))
 
+(defn- boundary-outbox-id []
+  (xr-outbox-id))
+
 (defn- receipt-slot-key
   [effect-id]
   (str "boundary/receipt:" (hash effect-id)))
@@ -52,11 +57,21 @@
        (doto (Thread. ^Runnable r name)
          (.setDaemon true))))))
 
+(defn- install-runtime-protocols
+  [n]
+  (-> n
+      (compile1/install-and-run (cell-protocol/install-cell-protocol))
+      (compile1/install-and-run (cell-protocol/install-behavior-protocol))
+      (compile1/install-and-run (cell-protocol/install-tms-distributed-protocol))))
+
+(defn- runtime-base-net []
+  (install-runtime-protocols net/empty-net))
+
 (defn- compiled-state
   [source]
   (let [[_compiled-stage expanded-stage] (demo/compiled-progression source)
         compiled (:compiled expanded-stage)
-        network (:network expanded-stage)
+        network (install-runtime-protocols (:network expanded-stage))
         graph (assoc (semantic-repl/compiled-semantic-graph compiled network)
                      :source source)]
     {:source source
@@ -76,7 +91,7 @@
 
 (defn- empty-state []
   {:network net/empty-net
-   :program/net net/empty-net
+   :program/net (runtime-base-net)
    :program/env (compiler-helpers/default-env)
    :program/graph {:nodes {} :edges [] :values {} :expansions {}}
    :program/results {}
@@ -153,7 +168,12 @@
   [state request]
   (resolve-cell-row (require-state state) request))
 
-(declare append-tui-block! edit-tui-block! install-block-slots read-tui-view semantic-trace)
+(declare all-blocks
+         append-tui-block!
+         edit-tui-block!
+         install-block-slots
+         read-tui-view
+         semantic-trace)
 
 (defn- block-by-index
   [state client-id index]
@@ -175,6 +195,11 @@
                                         (:network state))
             n2 (core/run-tasks tasks n1)]
         (assoc state :network n2)))))
+
+(defn- block-by-text-id
+  [state text-id]
+  (some #(when (= text-id (:text-id %)) %)
+        (all-blocks state)))
 
 (defn- next-global-order
   [state]
@@ -292,7 +317,78 @@
                      (net/network-cell-strongest network next-cell-id))
                    (conj seen block-id))))))))
 
-(defn- block-at-operator []
+(defn- tui-write-effect-request
+  [effect-id text-id payload epoch]
+  {:boundary/effect true
+   :boundary/id effect-id
+   :boundary/port :tui
+   :boundary/kind :tui/write-block
+   :boundary/target {:text-id text-id}
+   :boundary/payload payload
+   :boundary/epoch epoch})
+
+(defn- p:tui-write-request
+  [source-id text-id outbox-id]
+  (prop/construct-propagator
+   (fn [_inputs _outputs network]
+     (let [payload (net/network-cell-strongest network source-id)
+           epoch (or (:program/epoch (net/net-dict-or-empty network)) 0)
+           effect-id [:tui/write-block text-id epoch (hash payload)]]
+       (if (value/nothing? payload)
+         []
+         [(message outbox-id
+                   (obj/compound-object
+                    {(effect-slot-key effect-id)
+                     (tui-write-effect-request effect-id
+                                               text-id
+                                               payload
+                                               epoch)}))])))
+   [source-id]
+   [outbox-id]))
+
+(defn- trace-target-value
+  [label source-id]
+  {:trace/target true
+   :trace/symbol label
+   :node source-id
+   :label label})
+
+(defn- trace-target-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[label-id source-id maybe-out] (vec arg-ids)
+            target-id (or maybe-out out-id)]
+        (when-not (and label-id source-id (#{2 3} (count arg-ids)))
+          (throw (ex-info "trace-target expects label, source, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id n]
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (let [label (net/network-cell-strongest current-net label-id)]
+                    (if (value/unusable? label)
+                      []
+                      [(message target-id
+                                (trace-target-value label source-id))])))
+                [label-id]
+                [target-id])
+               network)]
+          [n [prop-id] target-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[label-id source-id maybe-out] (vec arg-ids)
+             target-id (or maybe-out out-id)
+             label (net/network-cell-strongest current-net label-id)]
+         (when-not (and label-id source-id (#{2 3} (count arg-ids)))
+           (throw (ex-info "trace-target expects label, source, and optional output"
+                           {:arg-ids arg-ids})))
+         (if (value/unusable? label)
+           []
+           [(message target-id (trace-target-value label source-id))])))}))
+
+(defn- block-at-operator [outbox-id]
   (with-meta
     (fn [network arg-ids out-id]
       (let [[instance-id index-id maybe-out] (vec arg-ids)
@@ -303,8 +399,12 @@
                           {:arg-ids arg-ids
                            :index (net/network-cell-strongest network
                                                              index-id)})))
-        (let [[read-prop n1] ((stdlib-prop/id text-id target-id) network)
-              [write-prop n2] ((stdlib-prop/id target-id text-id) n1)]
+        (let [network (nb/ensure-cell network outbox-id)
+              [read-prop n1] ((stdlib-prop/id text-id target-id) network)
+              [write-prop n2] ((p:tui-write-request target-id
+                                                     text-id
+                                                     outbox-id)
+                               n1)]
           [n2 [read-prop write-prop] target-id])))
     {compiler-helpers/output-selector-key
      (fn [arg-ids fallback-id]
@@ -317,7 +417,23 @@
              source-value (when text-id
                             (net/network-cell-strongest current-net
                                                         text-id))
-             target-value (net/network-cell-strongest current-net target-id)]
+             target-value (net/network-cell-strongest current-net target-id)
+             write-message (when (and text-id
+                                      (not (value/nothing? target-value)))
+                             (let [epoch (or (:program/epoch
+                                              (net/net-dict-or-empty current-net))
+                                             0)
+                                   effect-id [:tui/write-block
+                                              text-id
+                                              epoch
+                                              (hash target-value)]]
+                               (message outbox-id
+                                        (obj/compound-object
+                                         {(effect-slot-key effect-id)
+                                          (tui-write-effect-request effect-id
+                                                                    text-id
+                                                                    target-value
+                                                                    epoch)}))))]
          (when-not (= 3 (count arg-ids))
            (throw (ex-info "block-at expects instance, index, and output"
                            {:arg-ids arg-ids})))
@@ -325,8 +441,8 @@
            text-id
            (conj (message target-id source-value))
 
-           text-id
-           (conj (message text-id target-value)))))}))
+           write-message
+           (conj write-message))))}))
 
 (defn- instance-operator []
   (with-meta
@@ -604,10 +720,11 @@
 
 (defn- runtime-env [state base-env graph-id current-client-id]
   (as-> base-env env
-    (cenv/bind-at env 'block-at (block-at-operator) 0)
+    (cenv/bind-at env 'block-at (block-at-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'instance (instance-operator) 0)
+    (cenv/bind-at env 'trace-target (trace-target-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
-    (cenv/bind-at env 'xr-io (xr-io-operator (xr-outbox-id)) 0)
+    (cenv/bind-at env 'xr-io (xr-io-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'translate (translate-operator) 0)
     (reduce-kv (fn [e client-id {:keys [instance-id]}]
                  (cenv/bind-at e
@@ -620,21 +737,19 @@
       (cenv/bind-at env '% (cenv/cell-binding instance-id) 0)
       env)))
 
-(defn- sync-program-block-writes [state program-net epoch]
-  (reduce (fn [s block]
-            (let [source-block? (some? (:order block))
-                  v (net/network-cell-strongest program-net (:text-id block))]
-              (if (or source-block? (= value/nothing v))
-                s
-                (write-block-value s block epoch v))))
-          state
-          (all-blocks state)))
-
 (defn- retained-application-props
   [program-net]
   (vec (get (net/net-dict-or-empty program-net)
             compiler-app/apply-application-props-key
             #{})))
+
+(defn- settle-application-props
+  [program-net current-props]
+  (let [props (vec (distinct (concat (retained-application-props program-net)
+                                     current-props)))]
+    (-> program-net
+        (nb/run-propagators props)
+        (nb/run-propagators props))))
 
 (defn- top-level-declaration? [source]
   (try
@@ -662,7 +777,11 @@
           (if (and (seq? form)
                    (= 'trace (first form))
                    (symbol? (second form)))
-            (cons 'trace (cons (name (second form)) (nnext form)))
+            (cons 'trace
+                  (cons (list 'trace-target
+                              (name (second form))
+                              (second form))
+                        (nnext form)))
             form))
         form)))
     (catch Throwable _
@@ -707,10 +826,7 @@
                                                 (nb/ensure-cell program-net0
                                                                 graph-id))
           program-net2 (core/run-tasks tasks program-net1)
-          program-net3 (nb/run-propagators program-net2
-                                           (retained-application-props
-                                            program-net2))
-          program-net (nb/run-propagators program-net3 (:props compiled))
+          program-net (settle-application-props program-net2 (:props compiled))
           graph* (namespace-graph
                   (semantic-repl/compiled-semantic-graph compiled program-net)
                   (str (:client-id block) "-" (:order block)))
@@ -719,9 +835,8 @@
                         graph*)
                        :source source)
           result (compiled-result-value compiled program-net)
-          result-key [(:client-id block) (:index block)]
-          state' (sync-program-block-writes state program-net epoch)]
-      (-> state'
+          result-key [(:client-id block) (:index block)]]
+      (-> state
           (assoc :program/net program-net
                  :program/env (:env compiled)
                  :program/graph graph
@@ -745,6 +860,31 @@
       state
       (compile-program-form state block epoch source))))
 
+(defn- block-compile-error?
+  [state block]
+  (some? (get-in state
+                 [:program/results [(:client-id block) (:index block)] :error])))
+
+(defn- retry-errored-blocks
+  [state epoch source-blocks]
+  (reduce (fn [s block]
+            (if (block-compile-error? s block)
+              (rebuild-block s epoch block)
+              s))
+          state
+          source-blocks))
+
+(defn- retry-expression-blocks
+  [state epoch source-blocks]
+  (reduce (fn [s block]
+            (let [source (block-text s block)]
+              (if (and (string? source)
+                       (not (top-level-declaration? source)))
+                (rebuild-block s epoch block)
+                s)))
+          state
+          source-blocks))
+
 (defn- rebuild-program-state
   [state]
   (let [epoch (inc (or (:program/epoch state) 0))
@@ -755,8 +895,9 @@
                                    (nb/ensure-cell
                                     (seed-program-blocks
                                      state
-                                     (seed-program-instances state net/empty-net))
-                                    (xr-outbox-id))
+                                     (seed-program-instances state
+                                                             (runtime-base-net)))
+                                    (boundary-outbox-id))
                                    :program/epoch
                                    epoch)
                                   (runtime-graph-id)
@@ -774,6 +915,8 @@
                     (rebuild-block s epoch block))
                   base
                   source-blocks) s
+      (retry-errored-blocks s epoch source-blocks)
+      (retry-expression-blocks s epoch source-blocks)
       (reduce (fn [s block]
                 (let [source (block-text s block)]
                   (if (and (string? source) (trace-source? source))
@@ -784,9 +927,9 @@
 
 (defn- outbox-effects
   [program-net]
-  (if-not (contains? (net/net-env program-net) (xr-outbox-id))
+  (if-not (contains? (net/net-env program-net) (boundary-outbox-id))
     []
-    (let [outbox (net/network-cell-strongest program-net (xr-outbox-id))]
+    (let [outbox (net/network-cell-strongest program-net (boundary-outbox-id))]
       (if (value/unusable? outbox)
         []
         (->> (obj/public-slot-keys outbox)
@@ -821,18 +964,39 @@
                      request)
           (assoc :program/pending-after-effects tasks)))))
 
+(defn- record-tui-write
+  [state request]
+  (let [text-id (get-in request [:boundary/target :text-id])
+        payload (:boundary/payload request)]
+    (if-let [block (block-by-text-id state text-id)]
+      (if (some? (:order block))
+        state
+        (-> state
+            (write-block-value block (:boundary/epoch request) payload)
+            (update-in [:tui :effects] (fnil conj []) request)))
+      state)))
+
 (defn- graph-size
   [request]
-  (let [graph (get-in request [:boundary/payload :graph])]
+  (let [payload (:boundary/payload request)
+        graph (if (semantic-trace/semantic-trace-graph? payload)
+                payload
+                (:graph payload))]
     (+ (count (:nodes graph))
        (count (:edges graph)))))
 
 (defn- delivery-key
   [request]
-  [(:boundary/port request)
-   (:boundary/kind request)
-   (:boundary/receipt-id request)
-   (:boundary/epoch request)])
+  (case (:boundary/port request)
+    :tui [(:boundary/port request)
+          (:boundary/kind request)
+          (:boundary/target request)
+          (:boundary/id request)
+          (:boundary/epoch request)]
+    [(:boundary/port request)
+     (:boundary/kind request)
+     (:boundary/receipt-id request)
+     (:boundary/epoch request)]))
 
 (defn- collapse-boundary-effects
   [requests]
@@ -850,9 +1014,55 @@
 
 (defn- perform-boundary-effects
   [state]
-  (reduce record-xr-launch
+  (reduce (fn [s request]
+            (case [(:boundary/port request) (:boundary/kind request)]
+              [:xr :xr/launch-trace] (record-xr-launch s request)
+              [:tui :tui/write-block] (record-tui-write s request)
+              s))
           state
           (collapse-boundary-effects (outbox-effects (:program/net state)))))
+
+(defn- refresh-program-graph
+  [state]
+  (if (and (:compiled state) (:program/net state))
+    (let [fresh (semantic-repl/compiled-semantic-graph (:compiled state)
+                                                       (:program/net state))
+          graph (semantic-trace/graph-union (:graph state) fresh)]
+      (assoc state
+             :graph graph
+             :program/graph graph
+             :compiled-network (:program/net state)))
+    state))
+
+(defn run-runtime-cycle
+  "Apply already-committed model state through propagation effects.
+
+  Public for tests; command handlers should keep using the higher-level TUI/XR
+  operations unless they are deliberately testing the runtime cycle boundary."
+  [state]
+  (perform-boundary-effects (refresh-program-graph state)))
+
+(defn commit-runtime-input
+  "Commit an external cell message into the runtime model, then propagate/effect."
+  [state input]
+  (case (:runtime/input input)
+    (:cell-message :xr/message)
+    (let [cell-id (:cell-id input)
+          update-value (:update input)
+          n0 (nb/ensure-cell (:program/net state) cell-id)
+          [tasks n1] (core/eval-cells [(message cell-id update-value)] n0)
+          n2 (core/run-tasks tasks n1)]
+      (-> state
+          (assoc :program/net n2)
+          (update :runtime/inputs (fnil conj []) input)
+          run-runtime-cycle))
+
+    (throw (ex-info "unsupported runtime input" {:input input}))))
+
+(defn commit-runtime-input!
+  [session input]
+  (swap! session commit-runtime-input input)
+  @session)
 
 (defn- rebuild-program!
   [session]
@@ -1173,7 +1383,7 @@
           #{}
           blocks))
 
-(defn read-tui-view
+(defn project-tui-view
   [state {:keys [client-id]}]
   (let [tui (get-in (require-state state) [:tuis client-id])]
     (when-not tui
@@ -1190,16 +1400,25 @@
                         :value (block-value state block)})
                      (:blocks tui))})))
 
+(defn read-tui-view
+  [state command]
+  (project-tui-view state command))
+
 (defn unregister-tui!
   [session {:keys [client-id]}]
   (swap! session update :tuis dissoc client-id)
   {:client-id client-id
    :unregistered true})
 
-(defn read-xr-effects
+(defn project-xr-effects
   [state]
   {:effects (vec (get-in (require-state state) [:xr :effects] []))
-   :launched (vals (get-in state [:xr :launched] {}))})
+   :launched (vals (get-in state [:xr :launched] {}))
+   :tui-effects (vec (get-in state [:tui :effects] []))})
+
+(defn read-xr-effects
+  [state]
+  (project-xr-effects state))
 
 (defn handle-command!
   [session {:keys [op source] :as command}]
