@@ -620,8 +620,9 @@
 
 (defn- sync-program-block-writes [state program-net epoch]
   (reduce (fn [s block]
-            (let [v (net/network-cell-strongest program-net (:text-id block))]
-              (if (= value/nothing v)
+            (let [source-block? (some? (:order block))
+                  v (net/network-cell-strongest program-net (:text-id block))]
+              (if (or source-block? (= value/nothing v))
                 s
                 (write-block-value s block epoch v))))
           state

@@ -293,3 +293,27 @@
           (is (seq (get-in payload [:result :graph :nodes]))))
         (finally
           (stop))))))
+
+(deftest xr-io-supports-local-let-cell-receipt-target
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def out)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(-> (+ 1 2) out)"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [g r]
+               (trace out g)
+               (xr-io g r)
+               r)"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})
+          values (mapv :value (:blocks view))
+          effects (:effects (:result (runtime/handle-command! session
+                                                               {:op :xr/effects})))]
+      (is (= "(let-cell [g r]
+               (trace out g)
+               (xr-io g r)
+               r)"
+             (nth values 2)))
+      (is (= 1 (count effects)))
+      (is (= :xr/launch-trace (get-in effects [0 :boundary/kind]))))))
