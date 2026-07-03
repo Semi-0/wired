@@ -9,8 +9,11 @@
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]
+            [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
+            [propagators.datastructures.behavior :as behavior]
+            [propagators.datastructures.tms :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -243,6 +246,31 @@
       (is (= [0 1] (mapv :index (:blocks b-view))))
       (is (= 5 (get-in b-view [:blocks 0 :value]))))))
 
+(deftest multiple-clients-can-share-one-tui-instance
+  (let [session (runtime/new-session)]
+    (is (= 0 (:next-index (runtime/register-tui! session {:client-id "shared"}))))
+    (is (= 0 (:next-index (runtime/register-tui! session {:client-id "shared"}))))
+    (runtime/submit-tui-block! session
+                               {:client-id "shared"
+                                :text "(+ 1 2)"})
+    (let [view (runtime/read-tui-view @session {:client-id "shared"})]
+      (is (= [0 1 2] (mapv :index (:blocks view))))
+      (is (= 3 (get-in view [:blocks 1 :value]))))
+    (is (= 1 (:remaining-clients
+              (runtime/unregister-tui! session {:client-id "shared"}))))
+    (runtime/submit-tui-block! session
+                               {:client-id "shared"
+                                :text "(+ 2 3)"})
+    (let [view (runtime/read-tui-view @session {:client-id "shared"})]
+      (is (= [0 1 2 3 4] (mapv :index (:blocks view))))
+      (is (= 5 (get-in view [:blocks 3 :value]))))
+    (is (zero? (:remaining-clients
+                (runtime/unregister-tui! session {:client-id "shared"}))))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"tui client not found"
+                          (runtime/read-tui-view @session
+                                                 {:client-id "shared"})))))
+
 (deftest block-order-is-top-to-bottom
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "order"})
@@ -282,6 +310,45 @@
                                         (<-> (+ x 1) out))"})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 2 (get-in view [:blocks 2 :value]))))))
+
+(deftest tui-runtime-can-build-compiler-2-behavior-cell
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(def-net retain [acc next] [out]
+               (behavior-add-event acc next full)
+               (behavior-retain-last full 1 out))"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [events retained]
+               (behavior-event 6 2 events)
+               (behavior-event 8 3 events)
+               (behavior-cell events (behavior-empty-state) retain retained)
+               (block-at % 1 retained)
+               retained)"})
+    (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
+                            [:blocks 1 :value])]
+      (is (= 3 (behavior/base-value displayed))))))
+
+(deftest tui-runtime-can-project-distributed-tms-retraction
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [out]
+               (premise-input :yes :p 0 out)
+               (premise-retract :p 1 out)
+               (block-at % 1 out)
+               out)"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
+                            [:blocks 1 :value])]
+      (is (value/nothing? (tms/distributed-base-value displayed))))))
 
 (deftest top-level-relationships-do-not-auto-output-into-next-block
   (let [session (runtime/new-session)]

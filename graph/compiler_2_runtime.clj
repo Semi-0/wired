@@ -67,6 +67,11 @@
 (defn- runtime-base-net []
   (install-runtime-protocols net/empty-net))
 
+(defn- runtime-compiler-env []
+  ((requiring-resolve
+    'propagators.compiler-2.behavior/bind-behavior-construction-operators)
+   (compiler-helpers/default-env)))
+
 (defn- compiled-state
   [source]
   (let [[_compiled-stage expanded-stage] (demo/compiled-progression source)
@@ -92,7 +97,7 @@
 (defn- empty-state []
   {:network net/empty-net
    :program/net (runtime-base-net)
-   :program/env (compiler-helpers/default-env)
+   :program/env (runtime-compiler-env)
    :program/graph {:nodes {} :edges [] :values {} :expansions {}}
    :program/results {}
    :program/epoch 0
@@ -903,7 +908,7 @@
                                   (runtime-graph-id)
                                   (semantic-trace/graph-union (empty-graph))
                                   (semantic-trace/graph-union (empty-graph)))
-                    :program/env (compiler-helpers/default-env)
+                    :program/env (runtime-compiler-env)
                     :program/graph (empty-graph)
                     :program/results {}
                     :program/epoch epoch
@@ -1210,45 +1215,62 @@
         [next-prop n] ((obj/p:cdr next-id block-id) n)]
     (nb/run-propagators n [index-prop text-prop next-prop])))
 
-(defn register-tui!
-  [session {:keys [client-id]}]
+(defn- validate-client-id!
+  [client-id]
   (when-not client-id
     (throw (ex-info "missing client-id" {})))
   (when-not (valid-client-id? client-id)
     (throw (ex-info "invalid client-id for compiler env binding"
-                    {:client-id client-id})))
+                    {:client-id client-id}))))
+
+(defn- create-tui
+  [client-id]
+  (let [view-id (stable-node-id :tui client-id :view)
+        instance-id (stable-node-id :tui client-id :instance)
+        blocks-id (stable-node-id :tui client-id :blocks)]
+    {:client-id client-id
+     :view-id view-id
+     :instance-id instance-id
+     :blocks-id blocks-id
+     :head-id nil
+     :tail-id nil
+     :next-index 0
+     :client-count 0
+     :blocks []}))
+
+(defn- install-tui-instance
+  [network {:keys [view-id instance-id blocks-id]}]
+  (-> network
+      (nb/ensure-cell view-id)
+      (nb/install-cell instance-id instance-id instance-id)
+      (nb/ensure-cell blocks-id)
+      (install-instance-slots {:instance-id instance-id
+                               :blocks-id blocks-id})))
+
+(defn- ensure-tui!
+  [session client-id]
+  (validate-client-id! client-id)
   (let [state (ensure-session-state! session)]
-    (if-let [tui (get-in state [:tuis client-id])]
+    (or (get-in state [:tuis client-id])
+        (let [tui (create-tui client-id)
+              n (install-tui-instance (:network state) tui)]
+          (swap! session #(-> %
+                              (assoc :network n)
+                              (assoc-in [:tuis client-id] tui)))
+          tui))))
+
+(defn register-tui!
+  [session {:keys [client-id]}]
+  (let [tui (ensure-tui! session client-id)]
+    (swap! session update-in [:tuis client-id :client-count] (fnil inc 0))
+    (let [tui (get-in @session [:tuis client-id])]
       {:client-id (:client-id tui)
        :view-id (pr-str (:view-id tui))
-       :next-index (:next-index tui)}
-      (let [view-id (stable-node-id :tui client-id :view)
-            instance-id (stable-node-id :tui client-id :instance)
-            blocks-id (stable-node-id :tui client-id :blocks)
-            n (-> (:network state)
-                  (nb/ensure-cell view-id)
-                  (nb/install-cell instance-id instance-id instance-id)
-                  (nb/ensure-cell blocks-id)
-                  (install-instance-slots {:instance-id instance-id
-                                           :blocks-id blocks-id}))
-            tui {:client-id client-id
-                 :view-id view-id
-                 :instance-id instance-id
-                 :blocks-id blocks-id
-                 :head-id nil
-                 :tail-id nil
-                 :next-index 0
-                 :blocks []}]
-        (swap! session #(-> %
-                            (assoc :network n)
-                            (assoc-in [:tuis client-id] tui)))
-        {:client-id (:client-id tui)
-         :view-id (pr-str (:view-id tui))
-         :next-index (:next-index tui)}))))
+       :next-index (:next-index tui)})))
 
 (defn- tui!
   [session client-id]
-  (register-tui! session {:client-id client-id})
+  (ensure-tui! session client-id)
   (get-in @session [:tuis client-id]))
 
 (defn append-tui-block!
@@ -1406,9 +1428,18 @@
 
 (defn unregister-tui!
   [session {:keys [client-id]}]
-  (swap! session update :tuis dissoc client-id)
-  {:client-id client-id
-   :unregistered true})
+  (let [remaining (atom nil)]
+    (swap! session
+           (fn [state]
+             (let [count (get-in state [:tuis client-id :client-count] 0)
+                   next-count (max 0 (dec count))]
+               (reset! remaining next-count)
+               (if (pos? next-count)
+                 (assoc-in state [:tuis client-id :client-count] next-count)
+                 (update state :tuis dissoc client-id)))))
+    {:client-id client-id
+     :remaining-clients @remaining
+     :unregistered true}))
 
 (defn project-xr-effects
   [state]
