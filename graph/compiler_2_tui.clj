@@ -264,8 +264,23 @@
     (finally
       (server/request host port {:op :tui/unregister :client-id client-id}))))
 
+(defn- parse-args
+  [args]
+  (loop [args args
+         opts {}]
+    (if-let [arg (first args)]
+      (case arg
+        ("-name" "--name" "--client-id")
+        (recur (nnext args) (assoc opts :client-id (second args)))
+
+        ("-port" "--port")
+        (recur (nnext args) (assoc opts :port (Long/parseLong (second args))))
+
+        (if (re-matches #"\d+" arg)
+          (recur (next args) (assoc opts :port (Long/parseLong arg)))
+          (recur (next args) (assoc opts :client-id arg))))
+      opts)))
+
 (defn -main
   [& args]
-  (let [[port client-id] args]
-    (run-client {:port (if port (Long/parseLong port) server/default-port)
-                 :client-id (or client-id "tui-1")})))
+  (run-client (parse-args args)))
