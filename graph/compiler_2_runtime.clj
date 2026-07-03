@@ -4,6 +4,7 @@
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.application :as compiler-app]
             [propagators.compiler-2.env :as cenv]
             [propagators.compiler-2.helpers :as compiler-helpers]
             [propagators.compiler-2.main :as compiler]
@@ -628,6 +629,12 @@
           state
           (all-blocks state)))
 
+(defn- retained-application-props
+  [program-net]
+  (vec (get (net/net-dict-or-empty program-net)
+            compiler-app/apply-application-props-key
+            #{})))
+
 (defn- top-level-declaration? [source]
   (try
     (let [form (compiler-parser/read-form source)]
@@ -694,8 +701,11 @@
           [tasks program-net1] (core/eval-cells [(message graph-id graph)]
                                                 (nb/ensure-cell program-net0
                                                                 graph-id))
-          program-net (nb/run-propagators (core/run-tasks tasks program-net1)
-                                          (:props compiled))
+          program-net2 (core/run-tasks tasks program-net1)
+          program-net3 (nb/run-propagators program-net2
+                                           (retained-application-props
+                                            program-net2))
+          program-net (nb/run-propagators program-net3 (:props compiled))
           graph* (namespace-graph
                   (semantic-repl/compiled-semantic-graph compiled program-net)
                   (str (:client-id block) "-" (:order block)))

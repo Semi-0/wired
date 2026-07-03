@@ -317,3 +317,31 @@
              (nth values 2)))
       (is (= 1 (count effects)))
       (is (= :xr/launch-trace (get-in effects [0 :boundary/kind]))))))
+
+(deftest xr-io-trace-updates-when-later-block-adds-upstream-producer
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def out2)"
+                    "(def a)"
+                    "(-> (+ a 2) out2)"
+                    "(def r)"
+                    "(let-cell [g]
+                       (trace out2 g)
+                       (xr-io g r)
+                       r)"
+                    "(-> (+ 1 2) a)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (let [effects (:effects (:result (runtime/handle-command! session
+                                                               {:op :xr/effects})))
+          labels (->> effects
+                      last
+                      :boundary/payload
+                      :graph
+                      :nodes
+                      vals
+                      frequencies)]
+      (is (<= 2 (get labels "+" 0)))
+      (is (<= 2 (get labels "->" 0)))
+      (is (= 1 (get labels "1" 0)))
+      (is (<= 2 (get labels "a" 0)))
+      (is (pos? (get labels "out2" 0))))))
