@@ -613,6 +613,63 @@
            write-message
            (conj write-message))))}))
 
+(defn- be-block-target-operator [outbox-id instance-id]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[index-id maybe-source-id] (vec arg-ids)
+            source-id (or maybe-source-id out-id)
+            display-id (and instance-id
+                            index-id
+                            (block-at-display-id network instance-id index-id))]
+        (when-not (and (#{1 2} (count arg-ids)) display-id source-id)
+          (throw (ex-info "be:block expects a known block index and optional source"
+                          {:arg-ids arg-ids
+                           :index (when index-id
+                                    (net/network-cell-strongest network
+                                                              index-id))})))
+        (let [network (nb/ensure-cell network outbox-id)
+              [write-prop n] ((p:tui-display-request source-id
+                                                     display-id
+                                                     outbox-id)
+                              network)]
+          [n [write-prop] source-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[index-id maybe-source-id] (vec arg-ids)
+             source-id (or maybe-source-id out-id)
+             display-id (when (and instance-id index-id)
+                          (block-at-display-id current-net
+                                               instance-id
+                                               index-id))
+             target-value (when source-id
+                            (net/network-cell-strongest current-net source-id))
+             tick (or (:runtime/commit-tick (net/net-dict-or-empty current-net))
+                      (:program/epoch (net/net-dict-or-empty current-net))
+                      0)
+             write-message (when (and display-id
+                                      source-id
+                                      (not (value/nothing? target-value)))
+                             (let [effect-id [:tui/write-display
+                                              display-id
+                                              tick
+                                              (hash target-value)]]
+                               (message outbox-id
+                                        (obj/compound-object
+                                         {(effect-slot-key effect-id)
+                                          (tui-display-effect-request effect-id
+                                                                      display-id
+                                                                      target-value
+                                                                      tick)}))))]
+         (when-not (#{1 2} (count arg-ids))
+           (throw (ex-info "be:block expects index and optional source"
+                           {:arg-ids arg-ids})))
+         (cond-> []
+           write-message
+           (conj write-message))))}))
+
 (defn- instance-operator []
   (with-meta
     (fn [network arg-ids out-id]
@@ -834,6 +891,45 @@
                       {(effect-slot-key effect-id)
                        (xr-effect-request effect-id
                                           trace-graph
+                                           receipt-id
+                                           epoch)}))])))}))
+
+(defn- io-xr-operator [outbox-id]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[trace-id] (vec arg-ids)
+            receipt-id out-id]
+        (when-not (and trace-id receipt-id (= 1 (count arg-ids)))
+          (throw (ex-info "io:xr expects trace graph and returns receipt cell"
+                          {:arg-ids arg-ids})))
+        (let [network* (-> network
+                           (nb/ensure-cell outbox-id)
+                           (nb/ensure-cell receipt-id))
+              [prop-id n] ((p:xr-io-request trace-id outbox-id receipt-id)
+                           network*)]
+          [n [prop-id] receipt-id])))
+    {compiler-helpers/output-selector-key
+     (fn [_arg-ids fallback-id]
+       fallback-id)
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[trace-id] (vec arg-ids)
+             receipt-id out-id
+             trace-graph (when trace-id
+                           (net/network-cell-strongest current-net trace-id))
+             epoch (or (:program/epoch (net/net-dict-or-empty current-net)) 0)
+             effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
+         (when-not (and trace-id receipt-id (= 1 (count arg-ids)))
+           (throw (ex-info "io:xr expects trace graph and returns receipt cell"
+                           {:arg-ids arg-ids})))
+         (if (or (value/unusable? trace-graph)
+                 (not (semantic-trace/semantic-trace-graph? trace-graph)))
+           []
+           [(message outbox-id
+                     (obj/compound-object
+                      {(effect-slot-key effect-id)
+                       (xr-effect-request effect-id
+                                          trace-graph
                                           receipt-id
                                           epoch)}))])))}))
 
@@ -883,7 +979,7 @@
     (cenv/bind-at env 'trace-target (trace-target-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
     (cenv/bind-at env 'xr-io (xr-io-operator (boundary-outbox-id)) 0)
-    (cenv/bind-at env 'io:xr (xr-io-operator (boundary-outbox-id)) 0)
+    (cenv/bind-at env 'io:xr (io-xr-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'slider-io
                   (runtime-widget/slider-io-operator (boundary-outbox-id))
                   0)
@@ -900,6 +996,11 @@
     (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
       (cenv/bind-at env 'block (block-target-operator (boundary-outbox-id)
                                                       instance-id)
+                    0)
+      env)
+    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
+      (cenv/bind-at env 'be:block (be-block-target-operator (boundary-outbox-id)
+                                                            instance-id)
                     0)
       env)
     (reduce-kv (fn [e client-id {:keys [instance-id]}]
@@ -938,7 +1039,7 @@
 
 (defn- top-level-declaration? [source]
   (contains? '#{def def-cell def-cells def-net def-constraint
-                <-> -> block block-at be:block-at translate
+                <-> -> block block-at be:block be:block-at translate
                 xr-io io:xr
                 slider-io slider-panel-io io:slider io:slider-panel
                 behavior behavior-cell}
@@ -1930,6 +2031,9 @@
                         block (let [[_ index] x]
                                 (when (integer? index)
                                   {:index index :strict-past? true}))
+                        be:block (let [[_ index] x]
+                                   (when (integer? index)
+                                     {:index index :strict-past? true}))
                         block-at (let [[_ _ index] x]
                                    (when (integer? index)
                                      {:index index :strict-past? false}))
@@ -2100,6 +2204,45 @@
   [state command]
   (project-tui-view state command))
 
+(defn read-agent-blocks
+  [state {:keys [client-id indexes]}]
+  (let [view (project-tui-view state {:client-id client-id})
+        wanted (when indexes (set indexes))]
+    (cond-> view
+      wanted (update :blocks #(vec (filter (fn [block]
+                                             (contains? wanted (:index block)))
+                                           %))))))
+
+(defn read-agent-block
+  [state {:keys [client-id index] :as command}]
+  (when-not (integer? index)
+    (throw (ex-info "agent block read expects integer index"
+                    {:command command})))
+  (let [blocks (:blocks (read-agent-blocks state {:client-id client-id
+                                                  :indexes [index]}))]
+    (or (first blocks)
+        (throw (ex-info "block not found" {:client-id client-id
+                                           :index index})))))
+
+(defn send-agent-block!
+  [session {:keys [client-id text mode] :or {mode :submit} :as command}]
+  (when-not (string? text)
+    (throw (ex-info "agent block send expects text"
+                    {:command command})))
+  (tui! session client-id)
+  (case mode
+    :append (append-tui-block! session {:client-id client-id
+                                        :text text})
+    "append" (append-tui-block! session {:client-id client-id
+                                         :text text})
+    :submit (submit-tui-block! session {:client-id client-id
+                                        :text text})
+    "submit" (submit-tui-block! session {:client-id client-id
+                                         :text text})
+    (throw (ex-info "unknown agent block send mode"
+                    {:mode mode
+                     :command command}))))
+
 (defn unregister-tui!
   [session {:keys [client-id]}]
   (let [remaining (atom nil)]
@@ -2141,6 +2284,9 @@
          :tui/submit-block (submit-tui-block! session command)
          :tui/read-view (read-tui-view @session command)
          :tui/unregister (unregister-tui! session command)
+         :agent/blocks (read-agent-blocks @session command)
+         :agent/block (read-agent-block @session command)
+         :agent/send-block (send-agent-block! session command)
          :compile/source (compile-source! session source)
          :cells/list (list-cells @session)
          :cell/read (read-cell @session command)

@@ -154,25 +154,39 @@
          (vector? (ast/value x))) (ast/value x)
     :else nil))
 
+(defn- ast-list-args
+  [x]
+  (when (and (= :apply (ast/type x))
+             (= :symbol (ast/type (ast/operator x)))
+             (= 'list (ast/name (ast/operator x))))
+    (ast/args x)))
+
+(defn- slider-panel-cell-forms
+  [x]
+  (or (ast-list-args x)
+      ;; Compatibility for the earlier spike. Public syntax should use
+      ;; `(list a b c)` so this does not pretend vectors are first-class cells.
+      (ast-vector-value x)))
+
 (defn- io-slider-panel-plan
   [operand-forms]
   (let [args (vec operand-forms)]
     (case (count args)
       1 (let [cells (first args)]
-          (when-not (ast-vector-value cells)
-            (throw (ex-info "io:slider-panel expects a vector of cells"
+          (when-not (slider-panel-cell-forms cells)
+            (throw (ex-info "io:slider-panel expects (list cell ...)"
                             {:cells cells})))
           {:panel-label "panel"
-           :cell-forms (ast-vector-value cells)})
+           :cell-forms (slider-panel-cell-forms cells)})
       2 (let [cells (second args)]
-          (when-not (ast-vector-value cells)
-            (throw (ex-info "io:slider-panel expects panel-id and a vector of cells"
+          (when-not (slider-panel-cell-forms cells)
+            (throw (ex-info "io:slider-panel expects panel-id and (list cell ...)"
                             {:cells cells})))
           {:panel-label (or (some-> (ast-literal-value (first args)) str)
                             (ast-symbol-name (first args))
                             "panel")
-           :cell-forms (ast-vector-value cells)})
-      (throw (ex-info "io:slider-panel expects [cells] or panel-id plus [cells]"
+           :cell-forms (slider-panel-cell-forms cells)})
+      (throw (ex-info "io:slider-panel expects (list cell ...) or panel-id plus (list cell ...)"
                       {:operand-forms operand-forms})))))
 
 (defn io-slider-panel-operator

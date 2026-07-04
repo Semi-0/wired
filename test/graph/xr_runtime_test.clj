@@ -236,7 +236,7 @@
                          :source "(def a)
                                   (def b)
                                   (def c)
-                                  (io:slider-panel \"mix\" [a b c])"})
+                                  (io:slider-panel \"mix\" (list a b c))"})
     (let [widget (get-in @session [:xr :widgets "mix"])]
       (is (= "slider-panel" (:type widget)))
       (is (= #{"a" "b" "c"} (set (keys (:channels widget)))))
@@ -245,6 +245,18 @@
               channel (get-in widget [:channels label])]
           (is (= id (:view-cell channel)))
           (is (= id (:event-cell channel))))))))
+
+(deftest io-slider-panel-defaults-panel-id-with-list-syntax
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source "(def a)
+                                  (def b)
+                                  (def c)
+                                  (io:slider-panel (list a b c))"})
+    (let [widget (get-in @session [:xr :widgets "panel"])]
+      (is (= "slider-panel" (:type widget)))
+      (is (= #{"a" "b" "c"} (set (keys (:channels widget))))))))
 
 (deftest xr-widget-event-rejects-unknown-widget-without-mutating
   (let [session (runtime/new-session)]
@@ -628,7 +640,26 @@
       (is (= :delivered (:boundary/status receipt)))
       (is (= :xr (:boundary/port receipt))))))
 
-(deftest compiler-runtime-io-xr-alias-launches-effect
+(deftest compiler-runtime-io-xr-returns-receipt-cell
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def a)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(<-> 42 a)"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [g]
+               (trace a g)
+               (io:xr g))"})
+    (let [effects (:result (runtime/handle-command! session {:op :xr/effects}))
+          receipt-id (get-in effects [:effects 0 :boundary/receipt-id])
+          delivered (first (:launched effects))]
+      (is (= 1 (count (:effects effects))))
+      (is (= :xr/launch-trace (get-in effects [:effects 0 :boundary/kind])))
+      (is (some? receipt-id))
+      (is (net/network? (:receipt delivered))))))
+
+(deftest compiler-runtime-io-xr-rejects-explicit-receipt-argument
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A" :text "(def a)"})
@@ -639,11 +670,10 @@
      {:client-id "A"
       :text "(let-cell [g]
                (trace a g)
-               (io:xr g receipt)
-               receipt)"})
-    (let [effects (:result (runtime/handle-command! session {:op :xr/effects}))]
-      (is (= 1 (count (:effects effects))))
-      (is (= :xr/launch-trace (get-in effects [:effects 0 :boundary/kind]))))))
+               (io:xr g receipt))"})
+    (is (re-find #"io:xr expects trace graph"
+                 (get-in @session
+                         [:program/results ["A" 3] :error])))))
 
 (deftest tui-submit-xr-io-records-runtime-transaction
   (let [session (runtime/new-session)]

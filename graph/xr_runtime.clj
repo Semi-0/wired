@@ -146,7 +146,8 @@
           (str/starts-with? label "slot ")
           (contains? #{"<->" "->" "+" "-" "*" "/" "switch" "trace"
                        "xr-io" "io:xr"
-                       "block" "block-at" "instance" "translate"
+                       "block" "block-at" "be:block" "be:block-at"
+                       "instance" "translate" "list"
                        "slider-io" "slider-panel-io"
                        "io:slider" "io:slider-panel"}
                      label))

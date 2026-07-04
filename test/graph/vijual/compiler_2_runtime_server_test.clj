@@ -13,6 +13,7 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
+            [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -204,6 +205,37 @@
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 7 (get-in view [:blocks 2 :value])))
       (is (true? (get-in view [:blocks 2 :referenced?]))))))
+
+(deftest be-block-target-expression-displays-latest-update
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def events)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def out)"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(def-net retain-event [acc update] [out]
+               (behavior-add-event acc update out))"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(behavior events retain-event (behavior-empty-state) out)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> out (be:block 5))"})
+    (let [events-id (:binding/id (cenv/lookup (:program/env @session)
+                                              'events))]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :cell-message
+                                      :cell-id events-id
+                                      :update (obj/compound-object {1 7})})
+      (is (= 7 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                       [:blocks 5 :value])))
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :cell-message
+                                      :cell-id events-id
+                                      :update (obj/compound-object {2 8})})
+      (is (= 8 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                       [:blocks 5 :value]))))))
 
 (deftest block-target-rejects-non-empty-past-block
   (let [session (runtime/new-session)]
@@ -690,6 +722,31 @@
         (is (:ok (:response response)))
         (is (= 3 (get-in view [:blocks 1 :value])))
         (is (= :bool4/nothing (get-in view [:blocks 2 :value]))))
+      (finally
+        (close)))))
+
+(deftest udp-agent-api-sends-and-reads-blocks
+  (let [{:keys [udp-port close]} (server/start-server 0 0 0)]
+    (try
+      (let [sent (server/udp-request server/default-host
+                                     udp-port
+                                     {:op :agent/send-block
+                                      :client-id "agent"
+                                      :text "(+ 1 2)"})
+            all-blocks (server/udp-request server/default-host
+                                           udp-port
+                                           {:op :agent/blocks
+                                            :client-id "agent"})
+            block-1 (server/udp-request server/default-host
+                                        udp-port
+                                        {:op :agent/block
+                                         :client-id "agent"
+                                         :index 1})]
+        (is (:ok sent))
+        (is (:ok all-blocks))
+        (is (= "(+ 1 2)" (get-in all-blocks [:result :blocks 0 :value])))
+        (is (= 3 (get-in all-blocks [:result :blocks 1 :value])))
+        (is (= 3 (get-in block-1 [:result :value]))))
       (finally
         (close)))))
 
