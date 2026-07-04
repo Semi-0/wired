@@ -250,37 +250,39 @@
              (= :xr/launch-trace (:boundary/kind effect)))
     (get-in effect [:boundary/payload :graph])))
 
-(defn- latest-launch-effect-graph
+(defn- latest-effect-payload
   [session]
   (let [result (xr/handle-command! session {:op :xr/effects})]
-    (some launch-effect-graph (reverse (:effects result)))))
+    (when-let [graph (some launch-effect-graph (reverse (:effects result)))]
+      {:graph (assoc (xr/graph->json graph)
+                     :widgets (vals (:widgets result)))})))
 
 (defn- start-effect-push!
   [session out]
   (let [interval-ms 500
-        last-graph (atom nil)
+        last-payload (atom nil)
         executor (daemon-executor "xr-effects")]
     (try
-      (when-let [graph (latest-launch-effect-graph session)]
-        (reset! last-graph graph)
+      (when-let [payload (latest-effect-payload session)]
+        (reset! last-payload payload)
         (locking out
           (write-frame out
                        (response "xr/effects/update"
                                  {:ok true
-                                  :result {:graph (xr/graph->json graph)}}))))
+                                  :result payload}))))
       (catch Throwable _ nil))
     (.scheduleAtFixedRate
      executor
      (fn []
        (try
-         (when-let [graph (latest-launch-effect-graph session)]
-           (when-not (= graph @last-graph)
-             (reset! last-graph graph)
+         (when-let [payload (latest-effect-payload session)]
+           (when-not (= payload @last-payload)
+             (reset! last-payload payload)
              (locking out
                (write-frame out
                             (response "xr/effects/update"
                                       {:ok true
-                                       :result {:graph (xr/graph->json graph)}})))))
+                                       :result payload})))))
          (catch Throwable _ nil)))
      interval-ms
      interval-ms

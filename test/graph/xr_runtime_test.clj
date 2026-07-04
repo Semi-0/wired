@@ -801,6 +801,29 @@
         (finally
           (stop))))))
 
+(deftest xr-effect-payload-includes-widgets-registered-after-io-xr
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(define-behaviors a b c)"
+                    "(def out)"
+                    "(<-> (- (+ a b) c) out)"
+                    "(let-cell [g]
+                       (trace out g)
+                       (io:xr g))"
+                    "(io:slider-panel a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (let [payload (#'xr-server/latest-effect-payload session)
+          widgets (get-in payload [:graph :widgets])]
+      (is (some #(= "slider-panel-0" (:id %)) widgets))
+      (is (= #{"a" "b" "c"}
+             (->> widgets
+                  (filter #(= "slider-panel-0" (:id %)))
+                  first
+                  :channels
+                  vals
+                  (map :channel)
+                  set))))))
+
 (deftest xr-io-supports-local-let-cell-receipt-target
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
