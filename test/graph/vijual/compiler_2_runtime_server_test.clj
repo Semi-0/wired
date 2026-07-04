@@ -183,6 +183,42 @@
                (get-in (runtime/read-tui-view @session {:client-id "A"})
                        [:blocks 2 :value])))))))
 
+(deftest block-target-expression-writes-future-block
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session
+                               {:client-id "A"
+                                :text "(-> 7 (block 2))"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})]
+      (is (= "(-> 7 (block 2))" (get-in view [:blocks 0 :value])))
+      (is (= :bool4/nothing (get-in view [:blocks 1 :value])))
+      (is (= 7 (get-in view [:blocks 2 :value])))
+      (is (true? (get-in view [:blocks 2 :referenced?]))))))
+
+(deftest block-at-target-expression-writes-future-block
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session
+                               {:client-id "A"
+                                :text "(-> 7 (block-at (instance A) 2))"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})]
+      (is (= 7 (get-in view [:blocks 2 :value])))
+      (is (true? (get-in view [:blocks 2 :referenced?]))))))
+
+(deftest block-target-rejects-non-empty-past-block
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def occupied)"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"non-empty past block"
+         (runtime/edit-tui-block! session
+                                  {:client-id "A"
+                                   :index 2
+                                   :text "(-> 7 (block 0))"})))))
+
 (deftest block-at-application-is-traceable
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})

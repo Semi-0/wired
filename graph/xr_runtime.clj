@@ -144,9 +144,11 @@
       (or (str/starts-with? label "app:")
           (str/starts-with? label "call ")
           (str/starts-with? label "slot ")
-          (contains? #{"<->" "->" "+" "-" "*" "/" "switch" "trace" "xr-io"
-                       "block-at" "instance" "translate" "slider-io"
-                       "slider-panel-io"}
+          (contains? #{"<->" "->" "+" "-" "*" "/" "switch" "trace"
+                       "xr-io" "io:xr"
+                       "block" "block-at" "instance" "translate"
+                       "slider-io" "slider-panel-io"
+                       "io:slider" "io:slider-panel"}
                      label))
       "propagator"
 

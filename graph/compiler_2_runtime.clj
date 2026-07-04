@@ -350,6 +350,69 @@
   [network instance-id index-id]
   (block-at-slot-id network instance-id index-id :block/display))
 
+(declare p:tui-write-request tui-write-effect-request)
+
+(defn- block-target-operator
+  [outbox-id instance-id]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[index-id maybe-out] (vec arg-ids)
+            target-id (or maybe-out out-id)
+            text-id (and instance-id
+                         index-id
+                         (block-at-text-id network instance-id index-id))]
+        (when-not (and (#{1 2} (count arg-ids)) text-id)
+          (throw (ex-info "block expects a known block index"
+                          {:arg-ids arg-ids
+                           :index (when index-id
+                                    (net/network-cell-strongest network
+                                                              index-id))})))
+        (let [network (nb/ensure-cell network outbox-id)
+              [read-prop n1] ((stdlib-prop/id text-id target-id) network)
+              [write-prop n2] ((p:tui-write-request target-id
+                                                     text-id
+                                                     outbox-id)
+                               n1)]
+          [n2 [read-prop write-prop] target-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[index-id maybe-out] (vec arg-ids)
+             target-id (or maybe-out out-id)
+             text-id (and instance-id
+                          index-id
+                          (block-at-text-id current-net instance-id index-id))
+             source-value (when text-id
+                            (net/network-cell-strongest current-net text-id))
+             target-value (net/network-cell-strongest current-net target-id)
+             write-message (when (and text-id
+                                      (not (value/nothing? target-value)))
+                             (let [epoch (or (:program/epoch
+                                              (net/net-dict-or-empty current-net))
+                                             0)
+                                   effect-id [:tui/write-block
+                                              text-id
+                                              epoch
+                                              (hash target-value)]]
+                               (message outbox-id
+                                        (obj/compound-object
+                                         {(effect-slot-key effect-id)
+                                          (tui-write-effect-request effect-id
+                                                                    text-id
+                                                                    target-value
+                                                                    epoch)}))))]
+         (when-not (#{1 2} (count arg-ids))
+           (throw (ex-info "block expects index and optional output"
+                           {:arg-ids arg-ids})))
+         (cond-> []
+           text-id
+           (conj (message target-id source-value))
+
+           write-message
+           (conj write-message))))}))
+
 (defn- tui-write-effect-request
   [effect-id text-id payload epoch]
   (boundary/tui-write-effect-request effect-id text-id payload epoch))
@@ -447,7 +510,7 @@
       (let [[instance-id index-id maybe-out] (vec arg-ids)
             target-id (or maybe-out out-id)
             text-id (block-at-text-id network instance-id index-id)]
-        (when-not (and (= 3 (count arg-ids)) text-id)
+        (when-not (and (#{2 3} (count arg-ids)) text-id)
           (throw (ex-info "block-at expects a known instance and index"
                           {:arg-ids arg-ids
                            :index (net/network-cell-strongest network
@@ -487,8 +550,8 @@
                                                                     text-id
                                                                     target-value
                                                                     epoch)}))))]
-         (when-not (= 3 (count arg-ids))
-           (throw (ex-info "block-at expects instance, index, and output"
+         (when-not (#{2 3} (count arg-ids))
+           (throw (ex-info "block-at expects instance, index, and optional output"
                            {:arg-ids arg-ids})))
          (cond-> []
            text-id
@@ -820,13 +883,25 @@
     (cenv/bind-at env 'trace-target (trace-target-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
     (cenv/bind-at env 'xr-io (xr-io-operator (boundary-outbox-id)) 0)
+    (cenv/bind-at env 'io:xr (xr-io-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'slider-io
                   (runtime-widget/slider-io-operator (boundary-outbox-id))
                   0)
     (cenv/bind-at env 'slider-panel-io
                   (runtime-widget/slider-panel-io-operator (boundary-outbox-id))
                   0)
+    (cenv/bind-at env 'io:slider
+                  (runtime-widget/io-slider-operator (boundary-outbox-id))
+                  0)
+    (cenv/bind-at env 'io:slider-panel
+                  (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
+                  0)
     (cenv/bind-at env 'translate (translate-operator) 0)
+    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
+      (cenv/bind-at env 'block (block-target-operator (boundary-outbox-id)
+                                                      instance-id)
+                    0)
+      env)
     (reduce-kv (fn [e client-id {:keys [instance-id]}]
                  (cenv/bind-at e
                                (symbol client-id)
@@ -863,8 +938,10 @@
 
 (defn- top-level-declaration? [source]
   (contains? '#{def def-cell def-cells def-net def-constraint
-                <-> -> block-at be:block-at translate
-                xr-io slider-io slider-panel-io behavior behavior-cell}
+                <-> -> block block-at be:block-at translate
+                xr-io io:xr
+                slider-io slider-panel-io io:slider io:slider-panel
+                behavior behavior-cell}
              (top-level-form-head source)))
 
 (defn- trace-source? [source]
@@ -1771,6 +1848,8 @@
   (ensure-tui! session client-id)
   (get-in @session [:tuis client-id]))
 
+(declare prepare-block-targets!)
+
 (defn append-tui-block!
   [session {:keys [client-id text rebuild?] :or {rebuild? true} :as command}]
   (let [tui (tui! session client-id)
@@ -1811,6 +1890,7 @@
                         (assoc :network n3)
                         (assoc-in [:tuis client-id] tui')))
     (when has-text?
+      (prepare-block-targets! session client-id index text)
       (swap! session assign-source-order client-id index))
     (when rebuild?
       (rebuild-program! session))
@@ -1839,12 +1919,70 @@
       (:index last-block)
       (next-view-block-index view))))
 
+(defn- block-targets
+  [source]
+  (try
+    (let [forms (read-source-forms source)]
+      (into []
+            (keep (fn [x]
+                    (when (seq? x)
+                      (case (first x)
+                        block (let [[_ index] x]
+                                (when (integer? index)
+                                  {:index index :strict-past? true}))
+                        block-at (let [[_ _ index] x]
+                                   (when (integer? index)
+                                     {:index index :strict-past? false}))
+                        be:block-at (let [[_ _ index] x]
+                                      (when (integer? index)
+                                        {:index index :strict-past? false}))
+                        nil))))
+            (mapcat #(tree-seq coll? seq %) forms)))
+    (catch Throwable _
+      [])))
+
+(defn- block-target-indexes
+  [source]
+  (set (map :index (block-targets source))))
+
+(defn- empty-block? [state block]
+  (let [v (block-text state block)]
+    (or (value/nothing? v)
+        (and (string? v) (str/blank? v)))))
+
+(defn- ensure-block-index! [session client-id index]
+  (loop []
+    (let [tui (tui! session client-id)]
+      (when (<= (:next-index tui) index)
+        (append-tui-block! session {:client-id client-id
+                                    :rebuild? false})
+        (recur)))))
+
+(defn- prepare-block-targets!
+  [session client-id source-index source]
+  (doseq [{:keys [index strict-past?]} (sort-by :index (block-targets source))]
+    (let [state @session
+          target-block (block-by-index state client-id index)]
+      (cond
+        (and target-block
+             strict-past?
+             (< index source-index)
+             (not (empty-block? state target-block)))
+        (throw (ex-info "block target points to a non-empty past block"
+                        {:client-id client-id
+                         :source-index source-index
+                         :target-index index}))
+
+        (nil? target-block)
+        (ensure-block-index! session client-id index)))))
+
 (defn edit-tui-block!
   [session {:keys [client-id index text]}]
   (let [tui (tui! session client-id)
         block0 (some #(when (= index (:index %)) %) (:blocks tui))]
     (when-not block0
       (throw (ex-info "block not found" {:client-id client-id :index index})))
+    (prepare-block-targets! session client-id index text)
     (let [block block0
           new-epoch (inc (or (:epoch block) 0))
           _ (swap! session update-block client-id index
@@ -1928,27 +2066,12 @@
     :else
     v))
 
-(defn- block-at-target-indexes
-  [source]
-  (try
-    (let [form (compiler-parser/read-form source)]
-      (into #{}
-            (keep (fn [x]
-                    (when (and (seq? x)
-                               (contains? '#{block-at be:block-at} (first x)))
-                      (let [[_ _ index] x]
-                        (when (integer? index)
-                          index)))))
-            (tree-seq coll? seq form)))
-    (catch Throwable _
-      #{})))
-
 (defn- referenced-block-indexes
   [state blocks]
   (reduce (fn [indexes block]
             (let [v (block-value state block)]
               (if (string? v)
-                (into indexes (block-at-target-indexes v))
+                (into indexes (block-target-indexes v))
                 indexes)))
           #{}
           blocks))
