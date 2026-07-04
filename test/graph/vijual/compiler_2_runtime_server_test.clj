@@ -9,6 +9,7 @@
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]
+            [graph.xr-runtime :as xr]
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
@@ -331,6 +332,26 @@
     (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
                             [:blocks 1 :value])]
       (is (= 3 displayed)))))
+
+(deftest xr-graph-hides-generic-procedure-implementation-slots
+  (let [session (runtime/new-session)]
+    (xr/xr-extend-graph!
+     session
+     {:source "(def events)
+               (def retained)
+               (def out)
+               (def-net retain [acc update] [full]
+                 (behavior-add-event acc update full))
+               (behavior-event 6 2 events)
+               (behavior events retain (behavior-empty-state) retained)
+               (<-> (+ retained retained) out)"})
+    (let [labels (set (map :label (:nodes (xr/graph->json (:graph @session)))))]
+      (is (not-any? #(str/starts-with? % "slot generic/") labels))
+      (is (not-any? #(str/starts-with? % "slot method/") labels))
+      (is (not-any? #(str/starts-with? % "slot operator/") labels))
+      (is (contains? labels "behavior"))
+      (is (contains? labels "behavior-event"))
+      (is (contains? labels "+")))))
 
 (deftest tui-runtime-can-project-distributed-tms-retraction
   (let [session (runtime/new-session)]

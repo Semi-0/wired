@@ -4,6 +4,9 @@
             [clojure.set :as set]
             [clojure.string :as str]
             [clojure.walk :as walk]
+            [graph.compiler-2-runtime.block-model :as block-model]
+            [graph.compiler-2-runtime.boundary :as boundary]
+            [graph.compiler-2-runtime.ids :as runtime-ids]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-runtime.widget :as runtime-widget]
             [graph.vijual-compiler-2-demo :as demo]
@@ -33,32 +36,24 @@
 (defn new-session []
   (atom nil))
 
-(def default-xr-client-id "xr")
+(def default-xr-client-id runtime-ids/default-xr-client-id)
 
-(def ^:private external-source-client-id ::external-source)
+(def ^:private external-source-client-id runtime-ids/external-source-client-id)
 
-(defn- stable-node-id
-  [& parts]
-  (ids/->NodeId
-   (java.util.UUID/nameUUIDFromBytes
-    (.getBytes (pr-str (into [:compiler-2-runtime] parts)) "UTF-8"))))
+(defn- stable-node-id [& parts]
+  (apply runtime-ids/stable-node-id parts))
 
 (defn- runtime-graph-id []
-  (stable-node-id :runtime :semantic-graph))
-
-(defn- xr-outbox-id []
-  (stable-node-id :runtime :xr :outbox))
+  (runtime-ids/runtime-graph-id))
 
 (defn- boundary-outbox-id []
-  (xr-outbox-id))
+  (runtime-ids/boundary-outbox-id))
 
-(defn- receipt-slot-key
-  [effect-id]
-  (str "boundary/receipt:" (hash effect-id)))
+(defn- receipt-slot-key [effect-id]
+  (runtime-ids/receipt-slot-key effect-id))
 
-(defn- effect-slot-key
-  [effect-id]
-  (str "boundary/effect:" (hash effect-id)))
+(defn- effect-slot-key [effect-id]
+  (runtime-ids/effect-slot-key effect-id))
 
 (defn- daemon-executor
   [name]
@@ -222,14 +217,11 @@
 
 (defn- block-by-index
   [state client-id index]
-  (some #(when (= index (:index %)) %)
-        (get-in state [:tuis client-id :blocks])))
+  (block-model/block-by-index state client-id index))
 
 (defn- update-block
   [state client-id index f]
-  (update-in state [:tuis client-id :blocks]
-             (fn [blocks]
-               (mapv #(if (= index (:index %)) (f %) %) blocks))))
+  (block-model/update-block state client-id index f))
 
 (defn- write-block-value
   [state block _epoch payload]
@@ -243,45 +235,27 @@
 
 (defn- block-by-text-id
   [state text-id]
-  (some #(when (= text-id (:text-id %)) %)
-        (all-blocks state)))
+  (block-model/block-by-text-id state text-id))
 
 (defn- block-by-display-id
   [state display-id]
-  (some #(when (= display-id (:display-id %)) %)
-        (all-blocks state)))
+  (block-model/block-by-display-id state display-id))
 
 (defn- next-global-order
   [state]
-  (or (:next-order state) 0))
+  (block-model/next-global-order state))
 
 (defn- assign-source-order
   [state client-id index]
-  (let [order (next-global-order state)]
-    (-> state
-        (update-block client-id index
-                      #(assoc % :order order))
-        (update :block-order (fnil conj []) {:client-id client-id
-                                             :index index})
-        (assoc :next-order (inc order)))))
+  (block-model/assign-source-order state client-id index))
 
 (defn- source-blocks
   [state]
-  (->> (concat
-        (keep (fn [{:keys [client-id index]}]
-                (when-let [block (block-by-index state client-id index)]
-                  (when (some? (:order block))
-                    (assoc block :client-id client-id))))
-              (:block-order state))
-        (:external-sources state))
-       (sort-by :order)
-       vec))
+  (block-model/source-blocks state))
 
 (defn- block-text
   [state block]
-  (if (contains? block :source)
-    (:source block)
-    (net/network-cell-strongest (:network state) (:text-id block))))
+  (block-model/block-text state block))
 
 (defn- compiled-result-value
   [compiled network]
@@ -327,8 +301,7 @@
                                       aliases)))))))
 
 (defn- valid-client-id? [client-id]
-  (and (string? client-id)
-       (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_-]*" client-id))))
+  (block-model/valid-client-id? client-id))
 
 (defn- declared-slot-parent-id
   [network block-id slot-key]
@@ -379,24 +352,11 @@
 
 (defn- tui-write-effect-request
   [effect-id text-id payload epoch]
-  {:boundary/effect true
-   :boundary/id effect-id
-   :boundary/port :tui
-   :boundary/kind :tui/write-block
-   :boundary/target {:text-id text-id}
-   :boundary/payload payload
-   :boundary/epoch epoch})
+  (boundary/tui-write-effect-request effect-id text-id payload epoch))
 
 (defn- tui-display-effect-request
   [effect-id display-id payload tick]
-  {:boundary/effect true
-   :boundary/id effect-id
-   :boundary/port :tui
-   :boundary/kind :tui/write-display
-   :boundary/target {:display-id display-id}
-   :boundary/payload payload
-   :boundary/tick tick
-   :boundary/epoch tick})
+  (boundary/tui-display-effect-request effect-id display-id payload tick))
 
 (defn- p:tui-write-request
   [source-id text-id outbox-id]
@@ -753,22 +713,11 @@
 
 (defn- xr-effect-request
   [effect-id trace-graph receipt-id epoch]
-  {:boundary/effect true
-   :boundary/id effect-id
-   :boundary/port :xr
-   :boundary/kind :xr/launch-trace
-   :boundary/payload {:graph trace-graph}
-   :boundary/receipt-id receipt-id
-   :boundary/epoch epoch})
+  (boundary/xr-effect-request effect-id trace-graph receipt-id epoch))
 
 (defn- xr-receipt
   [request status]
-  {:boundary/receipt true
-   :boundary/id (:boundary/id request)
-   :boundary/port (:boundary/port request)
-   :boundary/kind (:boundary/kind request)
-   :boundary/status status
-   :boundary/epoch (:boundary/epoch request)})
+  (boundary/xr-receipt request status))
 
 (defn- p:xr-io-request
   [trace-id outbox-id receipt-id]
@@ -826,9 +775,7 @@
                                           epoch)}))])))}))
 
 (defn- all-blocks [state]
-  (mapcat (fn [[client-id tui]]
-            (map #(assoc % :client-id client-id) (:blocks tui)))
-          (:tuis state)))
+  (block-model/all-blocks state))
 
 (defn- seed-program-block-cell [program-net runtime-net id]
   (let [v (net/network-cell-strongest runtime-net id)]

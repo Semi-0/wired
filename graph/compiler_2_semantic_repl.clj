@@ -19,12 +19,18 @@
    :arrow-position :end})
 
 (def internal-slot-namespaces
-  #{"ast" "closure" "env"})
+  #{"ast" "closure" "env" "generic" "method" "operator"})
 
-(defn- internal-slot?
+(defn- internal-slot-keyword?
   [slot-key]
   (and (keyword? slot-key)
        (contains? internal-slot-namespaces (namespace slot-key))))
+
+(defn- internal-slot?
+  [slot-key]
+  (or (internal-slot-keyword? slot-key)
+      (and (vector? slot-key)
+           (internal-slot-keyword? (first slot-key)))))
 
 (defn- declaration-records
   [n]

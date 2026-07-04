@@ -1,16 +1,13 @@
 (ns graph.compiler-2-runtime.widget
   "Compiler-2 runtime widget IO operators for XR/browser projections."
-  (:require [propagators.cells.value :as value]
+  (:require [graph.compiler-2-runtime.ids :as runtime-ids]
+            [propagators.cells.value :as value]
             [propagators.compiler-2.helpers :as compiler-helpers]
             [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
             [propagators.propagator :as prop]))
-
-(defn- effect-slot-key
-  [effect-id]
-  (str "boundary/effect:" (hash effect-id)))
 
 (defn- widget-register-request
   [effect-id widget-type widget-id channels epoch]
@@ -48,7 +45,7 @@
                                     channels*))]]
         [(message outbox-id
                   (obj/compound-object
-                   {(effect-slot-key effect-id)
+                   {(runtime-ids/effect-slot-key effect-id)
                     (widget-register-request effect-id
                                              widget-type
                                              widget-id
