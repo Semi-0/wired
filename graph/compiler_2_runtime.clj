@@ -862,7 +862,8 @@
       nil)))
 
 (defn- top-level-declaration? [source]
-  (contains? '#{def def-cell def-net <-> -> block-at be:block-at translate
+  (contains? '#{def def-cell def-cells def-net def-constraint
+                <-> -> block-at be:block-at translate
                 xr-io slider-io slider-panel-io behavior behavior-cell}
              (top-level-form-head source)))
 
