@@ -324,6 +324,26 @@
    (slider-panel-io \"mix\" \"a\" a a-events \"b\" b b-events \"c\" c c-events widget)
    (<-> (- (+ a b) c) out)")
 
+(def user-route-widget-behavior-extension
+  "(def a-events)
+   (def b-events)
+   (def c-events)
+   (def a)
+   (def b)
+   (def c)
+   (def widget)
+   (def-net retain-event [acc update] [out]
+     (behavior-add-event acc update out))
+   (behavior a-events retain-event (behavior-empty-state) a)
+   (behavior b-events retain-event (behavior-empty-state) b)
+   (behavior c-events retain-event (behavior-empty-state) c)
+   (slider-panel-io \"mix\"
+     \"a\" a a-events
+     \"b\" b b-events
+     \"c\" c c-events
+     widget)
+   (<-> (- (+ a b) c) out)")
+
 (deftest widget-events-drive-complex-behavior-arithmetic-chain
   (let [session (runtime/new-session)]
     (xr/handle-command! session
@@ -346,6 +366,62 @@
                                  :widget-id "mix" :channel "c" :value 7})
     (is (= 17 (behavior-current session "out")))))
 
+(deftest xr-extend-graph-preserves-tui-env-for-user-route-be-block-at
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "taro"})
+    (runtime/submit-tui-block! session {:client-id "taro"
+                                        :text "(def out)"})
+    (runtime/submit-tui-block! session {:client-id "taro"
+                                        :text "(let-cell [g r]
+                                                (trace out g)
+                                                (xr-io g r)
+                                                r)"})
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source user-route-widget-behavior-extension})
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source "(be:block-at (instance taro) 2 out)"})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "a"
+                                 :value 10})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "b"
+                                 :value 4})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "c"
+                                 :value 3})
+    (let [view (runtime/read-tui-view @session {:client-id "taro"})
+          block-2 (some #(when (= 2 (:index %)) %) (:blocks view))]
+      (is (contains? (:tuis @session) "taro"))
+      (is (= 11 (behavior-current session "out")))
+      (is (= 11 (:value block-2))))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "a"
+                                 :value 20})
+    (let [view (runtime/read-tui-view @session {:client-id "taro"})
+          block-2 (some #(when (= 2 (:index %)) %) (:blocks view))]
+      (is (= 21 (behavior-current session "out")))
+      (is (= 21 (:value block-2))))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "c"
+                                 :value 7})
+    (let [view (runtime/read-tui-view @session {:client-id "taro"})
+          block-2 (some #(when (= 2 (:index %)) %) (:blocks view))]
+      (is (= 17 (behavior-current session "out")))
+      (is (= 17 (:value block-2))))
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source "(def replay-check)"})
+    (let [view (runtime/read-tui-view @session {:client-id "taro"})
+          block-2 (some #(when (= 2 (:index %)) %) (:blocks view))]
+      (is (= 17 (:value block-2))))))
+
 (deftest widget-event-transaction-marks-downstream-output-node
   (let [session (runtime/new-session)]
     (xr/handle-command! session
@@ -367,6 +443,41 @@
       (is (contains? changed-cells (pr-str out-id)))
       (is (contains? changed-nodes (:id out-node)))
       (is (< 1 (count changed-cells))))))
+
+(deftest tui-submit-after-xr-traced-behavior-update-returns
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def a-events)"
+                    "(def out)"
+                    "(def widget)"
+                    "(def r)"
+                    "(def-net retain-event [acc update] [out]
+                       (behavior-add-event acc update out))"
+                    "(behavior a-events retain-event (behavior-empty-state) out)"
+                    "(slider-io \"gain\" out a-events widget)"
+                    "(let-cell [g]
+                       (trace out g)
+                       (xr-io g r)
+                       r)"]]
+      (runtime/submit-tui-block! session {:client-id "A" :text source}))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "gain"
+                                 :channel "value"
+                                 :value 9})
+    (let [submitted (promise)
+          submit-thread (Thread.
+                         #(deliver submitted
+                                   (runtime/submit-tui-block!
+                                    session
+                                    {:client-id "A"
+                                     :text "out"}))
+                         "test-submit-out-after-xr-widget")]
+      (.setDaemon submit-thread true)
+      (.start submit-thread)
+      (let [view (deref submitted 3000 ::timeout)]
+        (is (not= ::timeout view))
+        (is (= 9 (behavior-current session "out")))
+        (is (some #(= 9 (:value %)) (:blocks view)))))))
 
 (deftest xr-trace-projects-widget-nodes-and-metadata
   (let [session (runtime/new-session)]

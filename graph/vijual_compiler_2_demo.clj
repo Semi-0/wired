@@ -2,7 +2,6 @@
   "Compile a compiler_2 let-cell form and draw the resulting propagator graph."
   (:require [clojure.string :as str]
             [graph.vijual :as v]
-            [leapfrog-pure :as datalog]
             [propagators.compiler-2.ast :as ast]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as cenv]
@@ -177,42 +176,19 @@
                   (label-entry output-id (str "out:" operator-label))])))
         (application-records compiled n)))
 
-(def app-prop-rules
-  [{:head [:app-prop [:app :prop :operator]]
-    :body [[:app-output [:app :out :operator]]
-           [:node-input [:app :prop]]
-           [:node-output [:out :prop]]]}])
-
-(defn topology-facts [n]
-  (let [graph (net/net-graph n)]
-    {:node-input
-     (set
-      (for [[id node] graph
-            input (pgraph/node-input-ids node)]
-        [input id]))
-     :node-output
-     (set
-      (for [[id node] graph
-            output (pgraph/node-output-ids node)]
-        [output id]))}))
-
-(defn application-facts [compiled n]
-  {:app-output
-   (set
-    (keep (fn [{:keys [app-id output-id operator-label]}]
-            (when (and app-id output-id)
-              [app-id output-id operator-label]))
-          (application-records compiled n)))})
-
 (defn application-prop-labels [compiled n]
-  (let [facts (merge-with into
-                          (topology-facts n)
-                          (application-facts compiled n))
-        app-props (:app-prop (datalog/semi-naive facts app-prop-rules))]
+  (let [graph (net/net-graph n)]
     (into {}
-          (map (fn [[_app-id prop-id operator-label]]
-                 [prop-id (str "prop:" operator-label)]))
-          app-props)))
+          (mapcat
+           (fn [{:keys [app-id output-id operator-label]}]
+             (keep (fn [[prop-id node]]
+                     (let [inputs (set (pgraph/node-input-ids node))
+                           outputs (set (pgraph/node-output-ids node))]
+                       (when (and (contains? inputs app-id)
+                                  (contains? outputs output-id))
+                         [prop-id (str "prop:" operator-label)])))
+                   graph))
+           (application-records compiled n)))))
 
 (defn slot-prop-labels [n]
   (into {}

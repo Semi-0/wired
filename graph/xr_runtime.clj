@@ -338,16 +338,19 @@
   [session {:keys [source client-id] :or {client-id default-xr-client-id}}]
   (when (str/blank? source)
     (throw (ex-info "missing source for xr graph extension" {})))
-  (let [old-xr (:xr @session)
-        sources (conj (vec (:sources old-xr)) source)
-        program (str "(let-cell []\n"
-                     (str/join "\n" sources)
-                     "\n)")]
-    (runtime/compile-source! session program)
-    (swap! session update :xr merge (assoc old-xr
-                                           :client-id client-id
-                                           :sources sources
-                                           :program program)))
+  (let [extension (runtime/extend-source! session {:source source
+                                                   :client-id client-id})]
+    (swap! session update :xr
+           (fn [xr-state]
+             (let [xr-state (or xr-state {})
+                   sources (conj (vec (:sources xr-state)) source)]
+               (assoc xr-state
+                      :client-id client-id
+                      :sources sources
+                      :program (str "(let-cell []\n"
+                                    (str/join "\n" sources)
+                                    "\n)")
+                      :last-extension extension)))))
   {:client-id client-id
    :graph (graph->json (:graph @session)
                        (graph-projection-options @session))})

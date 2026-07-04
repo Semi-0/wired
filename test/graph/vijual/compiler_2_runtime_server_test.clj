@@ -12,8 +12,6 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
-            [propagators.datastructures.behavior :as behavior]
-            [propagators.datastructures.tms :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -332,7 +330,7 @@
                retained)"})
     (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
                             [:blocks 1 :value])]
-      (is (= 3 (behavior/base-value displayed))))))
+      (is (= 3 displayed)))))
 
 (deftest tui-runtime-can-project-distributed-tms-retraction
   (let [session (runtime/new-session)]
@@ -348,7 +346,7 @@
     (runtime/append-tui-block! session {:client-id "A"})
     (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
                             [:blocks 1 :value])]
-      (is (value/nothing? (tms/distributed-base-value displayed))))))
+      (is (value/nothing? displayed)))))
 
 (deftest top-level-relationships-do-not-auto-output-into-next-block
   (let [session (runtime/new-session)]

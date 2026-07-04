@@ -1,6 +1,8 @@
 (ns graph.compiler-2-runtime
   "Shared compiler-2 runtime session for socket clients."
-  (:require [clojure.set :as set]
+  (:require [clojure.edn :as edn]
+            [clojure.set :as set]
+            [clojure.string :as str]
             [clojure.walk :as walk]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-runtime.widget :as runtime-widget]
@@ -15,7 +17,9 @@
             [propagators.compiler-2.main :as compiler]
             [propagators.compiler-2.parser :as compiler-parser]
             [propagators.core :as core]
+            [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.tms :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -23,12 +27,15 @@
             [propagators.propagator :as prop]
             [propagators.semantic-trace :as semantic-trace]
             [propagators.stdlib.prop :as stdlib-prop])
-  (:import [java.util.concurrent Executors TimeUnit]))
+  (:import [java.io PushbackReader StringReader]
+           [java.util.concurrent Executors TimeUnit]))
 
 (defn new-session []
   (atom nil))
 
 (def default-xr-client-id "xr")
+
+(def ^:private external-source-client-id ::external-source)
 
 (defn- stable-node-id
   [& parts]
@@ -126,12 +133,13 @@
      :graph graph}))
 
 (defn- empty-state []
-  {:network net/empty-net
+  {:network (install-runtime-protocols net/empty-net)
    :program/net (runtime-base-net)
    :program/env (runtime-compiler-env)
    :program/graph {:nodes {} :edges [] :values {} :expansions {}}
    :program/results {}
    :program/epoch 0
+   :runtime/commit-tick 0
    :block-order []
    :next-order 0
    :traces {}
@@ -238,6 +246,11 @@
   (some #(when (= text-id (:text-id %)) %)
         (all-blocks state)))
 
+(defn- block-by-display-id
+  [state display-id]
+  (some #(when (= display-id (:display-id %)) %)
+        (all-blocks state)))
+
 (defn- next-global-order
   [state]
   (or (:next-order state) 0))
@@ -254,17 +267,21 @@
 
 (defn- source-blocks
   [state]
-  (->> (:block-order state)
-       (keep (fn [{:keys [client-id index]}]
-               (when-let [block (block-by-index state client-id index)]
-                 (when (some? (:order block))
-                   (assoc block :client-id client-id)))))
+  (->> (concat
+        (keep (fn [{:keys [client-id index]}]
+                (when-let [block (block-by-index state client-id index)]
+                  (when (some? (:order block))
+                    (assoc block :client-id client-id))))
+              (:block-order state))
+        (:external-sources state))
        (sort-by :order)
        vec))
 
 (defn- block-text
   [state block]
-  (net/network-cell-strongest (:network state) (:text-id block)))
+  (if (contains? block :source)
+    (:source block)
+    (net/network-cell-strongest (:network state) (:text-id block))))
 
 (defn- compiled-result-value
   [compiled network]
@@ -331,8 +348,8 @@
                                                   :instance/blocks)]
       (net/network-cell-strongest network blocks-id))))
 
-(defn- block-at-text-id
-  [network instance-id index-id]
+(defn- block-at-slot-id
+  [network instance-id index-id slot-key]
   (let [wanted-index (net/network-cell-strongest network index-id)
         first-block-id (instance-block-head-id network instance-id)]
     (loop [block-id first-block-id
@@ -342,17 +359,23 @@
         (let [index-cell-id (declared-slot-parent-id network
                                                      block-id
                                                      :block/index)
-              text-cell-id (declared-slot-parent-id network
-                                                    block-id
-                                                    :block/text)
+              slot-cell-id (declared-slot-parent-id network block-id slot-key)
               next-cell-id (declared-slot-parent-id network block-id :cdr)
               block-index (when index-cell-id
                             (net/network-cell-strongest network index-cell-id))]
           (if (= wanted-index block-index)
-            text-cell-id
+            slot-cell-id
             (recur (when next-cell-id
                      (net/network-cell-strongest network next-cell-id))
                    (conj seen block-id))))))))
+
+(defn- block-at-text-id
+  [network instance-id index-id]
+  (block-at-slot-id network instance-id index-id :block/text))
+
+(defn- block-at-display-id
+  [network instance-id index-id]
+  (block-at-slot-id network instance-id index-id :block/display))
 
 (defn- tui-write-effect-request
   [effect-id text-id payload epoch]
@@ -363,6 +386,17 @@
    :boundary/target {:text-id text-id}
    :boundary/payload payload
    :boundary/epoch epoch})
+
+(defn- tui-display-effect-request
+  [effect-id display-id payload tick]
+  {:boundary/effect true
+   :boundary/id effect-id
+   :boundary/port :tui
+   :boundary/kind :tui/write-display
+   :boundary/target {:display-id display-id}
+   :boundary/payload payload
+   :boundary/tick tick
+   :boundary/epoch tick})
 
 (defn- p:tui-write-request
   [source-id text-id outbox-id]
@@ -380,6 +414,28 @@
                                                text-id
                                                payload
                                                epoch)}))])))
+   [source-id]
+   [outbox-id]))
+
+(defn- p:tui-display-request
+  [source-id display-id outbox-id]
+  (prop/construct-propagator
+   (fn [_inputs _outputs network]
+     (let [payload (net/network-cell-strongest network source-id)
+           dict (net/net-dict-or-empty network)
+           tick (or (:runtime/commit-tick dict)
+                    (:program/epoch dict)
+                    0)
+           effect-id [:tui/write-display display-id tick (hash payload)]]
+       (if (value/nothing? payload)
+         []
+         [(message outbox-id
+                   (obj/compound-object
+                    {(effect-slot-key effect-id)
+                     (tui-display-effect-request effect-id
+                                                 display-id
+                                                 payload
+                                                 tick)}))])))
    [source-id]
    [outbox-id]))
 
@@ -478,6 +534,59 @@
            text-id
            (conj (message target-id source-value))
 
+           write-message
+           (conj write-message))))}))
+
+(defn- be-block-at-operator [outbox-id]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[instance-id index-id source-id] (vec arg-ids)
+            display-id (block-at-display-id network instance-id index-id)]
+        (when-not (and (= 3 (count arg-ids)) display-id)
+          (throw (ex-info "be:block-at expects a known instance, index, and source"
+                          {:arg-ids arg-ids
+                           :index (net/network-cell-strongest network
+                                                             index-id)})))
+        (let [network (nb/ensure-cell network outbox-id)
+              [write-prop n] ((p:tui-display-request source-id
+                                                     display-id
+                                                     outbox-id)
+                              network)]
+          [n [write-prop] source-id])))
+    {compiler-helpers/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     compiler-helpers/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [[instance-id index-id source-id] (vec arg-ids)
+             source-id (or source-id out-id)
+             display-id (when (and instance-id index-id)
+                          (block-at-display-id current-net
+                                               instance-id
+                                               index-id))
+             target-value (when source-id
+                            (net/network-cell-strongest current-net source-id))
+             tick (or (:runtime/commit-tick (net/net-dict-or-empty current-net))
+                      (:program/epoch (net/net-dict-or-empty current-net))
+                      0)
+             write-message (when (and display-id
+                                      source-id
+                                      (not (value/nothing? target-value)))
+                             (let [effect-id [:tui/write-display
+                                              display-id
+                                              tick
+                                              (hash target-value)]]
+                               (message outbox-id
+                                        (obj/compound-object
+                                         {(effect-slot-key effect-id)
+                                          (tui-display-effect-request effect-id
+                                                                      display-id
+                                                                      target-value
+                                                                      tick)}))))]
+         (when-not (= 3 (count arg-ids))
+           (throw (ex-info "be:block-at expects instance, index, and source"
+                           {:arg-ids arg-ids})))
+         (cond-> []
            write-message
            (conj write-message))))}))
 
@@ -750,7 +859,8 @@
      (let [n0 (reduce #(seed-program-block-cell %1 (:network state) %2)
                       n
                       [(:block-id block) (:index-id block)
-                       (:next-id block) (:text-id block)])]
+                       (:next-id block) (:text-id block)
+                       (:display-id block)])]
        (install-block-slots n0 block)))
    program-net
    (all-blocks state)))
@@ -758,6 +868,7 @@
 (defn- runtime-env [state base-env graph-id current-client-id]
   (as-> base-env env
     (cenv/bind-at env 'block-at (block-at-operator (boundary-outbox-id)) 0)
+    (cenv/bind-at env 'be:block-at (be-block-at-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'instance (instance-operator) 0)
     (cenv/bind-at env 'trace-target (trace-target-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
@@ -804,11 +915,29 @@
       nil)))
 
 (defn- top-level-declaration? [source]
-  (contains? '#{def def-cell def-net <-> -> block-at translate trace}
+  (contains? '#{def def-cell def-net <-> -> block-at be:block-at translate
+                xr-io slider-io slider-panel-io behavior behavior-cell}
              (top-level-form-head source)))
 
 (defn- trace-source? [source]
   (= 'trace (top-level-form-head source)))
+
+(def ^:private source-reader-eof (Object.))
+
+(defn- read-source-forms
+  [source]
+  (let [source (str/replace source
+                            #"\(\s*::(?=\s)"
+                            (str "(" compiler-parser/network-marker))
+        reader (PushbackReader. (StringReader. source))]
+    (loop [forms []]
+      (let [form (edn/read {:eof source-reader-eof} reader)]
+        (if (identical? source-reader-eof form)
+          (do
+            (when-not (seq forms)
+              (throw (ex-info "empty compiler-2 source" {:source source})))
+            forms)
+          (recur (conj forms form)))))))
 
 (defn- trace-form? [source]
   (try
@@ -1044,6 +1173,34 @@
             (update-in [:tui :effects] (fnil conj []) request)))
       state)))
 
+(defn- display-behavior-update
+  [display-id tick payload]
+  (behavior/retained-value [:tui/display display-id]
+                           tick
+                           payload
+                           #{[:tui/display display-id tick]}))
+
+(defn- write-block-display-value
+  [state block tick payload]
+  (let [update (display-behavior-update (:display-id block) tick payload)
+        [tasks n1] (core/eval-cells [(message (:display-id block) update)]
+                                    (:network state))
+        n2 (core/run-tasks tasks n1)]
+    (assoc state :network n2)))
+
+(defn- record-tui-display
+  [state request]
+  (let [display-id (get-in request [:boundary/target :display-id])
+        payload (:boundary/payload request)
+        tick (or (:boundary/tick request)
+                 (:boundary/epoch request)
+                 0)]
+    (if-let [block (block-by-display-id state display-id)]
+      (-> state
+          (write-block-display-value block tick payload)
+          (update-in [:tui :effects] (fnil conj []) request))
+      state)))
+
 (defn- display-widget-value
   [v]
   (when-not (value/unusable? v)
@@ -1204,12 +1361,20 @@
 
 (defn- delivery-key
   [request]
-  (case (:boundary/port request)
-    :tui [(:boundary/port request)
-          (:boundary/kind request)
-          (:boundary/target request)
-          (:boundary/id request)
-          (:boundary/epoch request)]
+  (case [(:boundary/port request) (:boundary/kind request)]
+    [:tui :tui/write-display]
+    [(:boundary/port request)
+     (:boundary/kind request)
+     (:boundary/target request)
+     (:boundary/epoch request)]
+
+    [:tui :tui/write-block]
+    [(:boundary/port request)
+     (:boundary/kind request)
+     (:boundary/target request)
+     (:boundary/id request)
+     (:boundary/epoch request)]
+
     [(:boundary/port request)
      (:boundary/kind request)
      (:boundary/receipt-id request)
@@ -1236,6 +1401,7 @@
               [:xr :xr/launch-trace] (record-xr-launch s request)
               [:xr :xr/widget-register] (record-widget-register s request)
               [:tui :tui/write-block] (record-tui-write s request)
+              [:tui :tui/write-display] (record-tui-display s request)
               s))
           state
           (collapse-boundary-effects (outbox-effects (:program/net state)))))
@@ -1264,6 +1430,18 @@
   [state widget-id]
   (inc (long (get-in state [:xr :widget-epochs widget-id] 0))))
 
+(defn- next-runtime-commit-tick
+  [state]
+  (inc (long (or (:runtime/commit-tick state) 0))))
+
+(defn- assoc-program-commit-tick
+  [state tick]
+  (assoc state
+         :program/net
+         (net/assoc-net-dict-entry (:program/net state)
+                                   :runtime/commit-tick
+                                   tick)))
+
 (defn- widget-channel
   [state widget-id channel]
   (or (get-in state [:xr :widgets widget-id :channels channel])
@@ -1282,18 +1460,74 @@
             state
             cell-ids)))
 
+(defn- apply-program-updates
+  [state updates]
+  (let [updates (vec (remove (comp nil? :cell-id) updates))
+        n0 (reduce (fn [n {:keys [cell-id]}]
+                     (nb/ensure-cell n cell-id))
+                   (:program/net state)
+                   updates)
+        [tasks n1] (core/eval-cells
+                    (mapv (fn [{:keys [cell-id update]}]
+                            (message cell-id update))
+                          updates)
+                    n0)
+        n2 (core/run-tasks tasks n1)
+        n3 (settle-application-props n2 [])]
+    (assoc state :program/net n3)))
+
+(defn- replay-widget-updates
+  [state {:keys [widget-id updates]}]
+  (let [widget-id (str widget-id)
+        channels (get-in state [:xr :widgets widget-id :channels])
+        updates* (vec
+                  (keep (fn [{:keys [channel value update]}]
+                          (when-let [event-cell (get-in channels
+                                                         [(str channel)
+                                                          :event-cell])]
+                            {:cell-id event-cell
+                             :value value
+                             :update update}))
+                        updates))]
+    (-> state
+        (apply-program-updates updates*)
+        (annotate-widget-cell-values widget-id))))
+
+(defn- replay-runtime-input
+  [state input]
+  (let [state (if-let [tick (:runtime/commit-tick input)]
+                (assoc-program-commit-tick state tick)
+                state)]
+    (case (:runtime/input input)
+      (:cell-message :xr/message)
+      (apply-program-updates state [(select-keys input [:cell-id :update])])
+
+      :xr/widget-event
+      (replay-widget-updates state input)
+
+      state)))
+
+(defn- replay-runtime-inputs
+  [state]
+  (reduce replay-runtime-input state (:runtime/inputs state)))
+
 (defn commit-runtime-input
   "Commit an external cell message into the runtime model, then propagate/effect."
   [state input]
-  (case (:runtime/input input)
+  (let [tick (or (:runtime/commit-tick input)
+                 (next-runtime-commit-tick state))
+        input (assoc input :runtime/commit-tick tick)
+        state (-> state
+                  (assoc :runtime/commit-tick tick)
+                  (assoc-program-commit-tick tick))]
+    (case (:runtime/input input)
     (:cell-message :xr/message)
     (let [before-net (:program/net state)
           cell-id (:cell-id input)
           update-value (:update input)
-          n0 (nb/ensure-cell (:program/net state) cell-id)
-          [tasks n1] (core/eval-cells [(message cell-id update-value)] n0)
-          n2 (core/run-tasks tasks n1)
-          n3 (settle-application-props n2 [])]
+          n3 (:program/net
+              (apply-program-updates state [{:cell-id cell-id
+                                             :update update-value}]))]
       (-> state
           (assoc :program/net n3)
           (update :runtime/inputs (fnil conj []) input)
@@ -1319,17 +1553,7 @@
                               :update (obj/compound-object
                                        {epoch (get latest-values channel-name)})}))
                          channels))
-          n0 (reduce (fn [n {:keys [cell-id]}]
-                       (nb/ensure-cell n cell-id))
-                     (:program/net state)
-                     updates)
-          [tasks n1] (core/eval-cells
-                      (mapv (fn [{:keys [cell-id update]}]
-                              (message cell-id update))
-                            updates)
-                      n0)
-          n2 (core/run-tasks tasks n1)
-          n3 (settle-application-props n2 [])]
+          n3 (:program/net (apply-program-updates state updates))]
       (-> state
           (assoc :program/net n3)
           (assoc-in [:xr :widget-epochs widget-id] epoch)
@@ -1345,7 +1569,7 @@
           (annotate-widget-cell-values widget-id)
           (record-runtime-transaction before-net)))
 
-    (throw (ex-info "unsupported runtime input" {:input input}))))
+    (throw (ex-info "unsupported runtime input" {:input input})))))
 
 (defn commit-runtime-input!
   [session input]
@@ -1360,8 +1584,44 @@
              (-> state
                  rebuild-program-state
                  perform-boundary-effects
+                 replay-runtime-inputs
+                 run-runtime-cycle
                  (record-runtime-transaction before-net)))))
   @session)
+
+(defn extend-source!
+  "Append compiler source to the active runtime without replacing TUI state.
+
+  The source may contain multiple top-level forms. Each form is installed as a
+  hidden ordered source block, so definitions can extend the existing compiler
+  environment the same way visible TUI blocks do.
+  "
+  [session {:keys [source client-id] :or {client-id default-xr-client-id}}]
+  (ensure-session-state! session)
+  (let [forms (read-source-forms source)
+        installed (atom [])]
+    (swap! session
+           (fn [state]
+             (let [start-order (next-global-order state)
+                   start-index (count (:external-sources state))
+                   blocks (mapv
+                           (fn [offset form]
+                             {:client-id external-source-client-id
+                              :source-client-id client-id
+                              :index (+ start-index offset)
+                              :order (+ start-order offset)
+                              :epoch 0
+                              :source (pr-str form)
+                              :external? true})
+                           (range)
+                           forms)]
+               (reset! installed blocks)
+               (-> state
+                   (update :external-sources (fnil into []) blocks)
+                   (assoc :next-order (+ start-order (count blocks)))))))
+    (rebuild-program! session)
+    {:client-id client-id
+     :blocks @installed}))
 
 (defn- trace-via-propagator
   ([graph request]
@@ -1498,11 +1758,12 @@
      :stopped true}))
 
 (defn- install-block-slots
-  [n {:keys [block-id index-id text-id next-id]}]
+  [n {:keys [block-id index-id text-id display-id next-id]}]
   (let [[index-prop n] ((obj/p:slot :block/index index-id block-id) n)
         [text-prop n] ((obj/p:slot :block/text text-id block-id) n)
+        [display-prop n] ((obj/p:slot :block/display display-id block-id) n)
         [next-prop n] ((obj/p:cdr next-id block-id) n)]
-    (nb/run-propagators n [index-prop text-prop next-prop])))
+    (nb/run-propagators n [index-prop text-prop display-prop next-prop])))
 
 (defn- validate-client-id!
   [client-id]
@@ -1570,6 +1831,7 @@
         block {:block-id (ids/new-node-id)
                :index-id (ids/new-node-id)
                :text-id (ids/new-node-id)
+               :display-id (ids/new-node-id)
                :next-id (ids/new-node-id)
                :index index
                :epoch 0}
@@ -1580,6 +1842,7 @@
                ((if has-text?
                   #(nb/install-cell % (:text-id block) text text)
                   #(nb/install-cell % (:text-id block))))
+               (nb/install-cell (:display-id block))
                (nb/install-cell (:next-id block)))
         n1 (install-block-slots n0 block)
         messages (cond-> []
@@ -1606,7 +1869,8 @@
     {:client-id client-id
      :index index
      :block-id (pr-str (:block-id block))
-     :text-id (pr-str (:text-id block))}))
+     :text-id (pr-str (:text-id block))
+     :display-id (pr-str (:display-id block))}))
 
 (defn- next-view-block-index
   [view]
@@ -1669,6 +1933,53 @@
   [state block]
   (net/network-cell-strongest (:network state) (:text-id block)))
 
+(defn- block-display-value
+  [state block]
+  (net/network-cell-strongest (:network state) (:display-id block)))
+
+(defn- block-view-value
+  [state block]
+  (let [display (when (nil? (:order block))
+                  (block-display-value state block))]
+    (if (and display (not (value/unusable? display)))
+      display
+      (block-value state block))))
+
+(defn- behavior-projection?
+  [v]
+  (and (contains? (obj/public-slot-keys v) behavior/base-layer)
+       (contains? (obj/public-slot-keys v) behavior/summary-layer)))
+
+(defn- project-tui-value
+  [v]
+  (cond
+    (value/unusable? v)
+    v
+
+    (semantic-trace/semantic-trace-graph? v)
+    v
+
+    (behavior-projection? v)
+    (project-tui-value (behavior/base-value v))
+
+    (behavior/behavior-value? v)
+    (let [current (behavior/strongest-value v)]
+      (if (value/unusable? current)
+        current
+        (project-tui-value current)))
+
+    (tms/distributed-value? v)
+    (let [projected (tms/strongest-distributed-value v)]
+      (if (value/unusable? projected)
+        projected
+        (tms/distributed-base-value projected)))
+
+    (net/network? v)
+    (or (semantic-repl/display-cell-value v) "network")
+
+    :else
+    v))
+
 (defn- block-at-target-indexes
   [source]
   (try
@@ -1676,7 +1987,7 @@
       (into #{}
             (keep (fn [x]
                     (when (and (seq? x)
-                               (= 'block-at (first x)))
+                               (contains? '#{block-at be:block-at} (first x)))
                       (let [[_ _ index] x]
                         (when (integer? index)
                           index)))))
@@ -1708,9 +2019,10 @@
                        {:index (:index block)
                         :block-id (pr-str (:block-id block))
                         :text-id (pr-str (:text-id block))
+                        :display-id (pr-str (:display-id block))
                         :referenced? (contains? referenced-indexes
                                                 (:index block))
-                        :value (block-value state block)})
+                        :value (project-tui-value (block-view-value state block))})
                      (:blocks tui))})))
 
 (defn read-tui-view
