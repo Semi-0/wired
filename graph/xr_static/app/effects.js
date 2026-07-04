@@ -18,17 +18,7 @@ export const connectSocket = () =>
     });
   });
 
-const parseValue = (raw) => {
-  const text = raw.trim();
-  if (!text) return "";
-  try {
-    return JSON.parse(text);
-  } catch {
-    return raw;
-  }
-};
-
-export const bindControls = ({ installTrace, extendGraph, sendValue, setViewMode }) =>
+export const bindControls = ({ installTrace, extendGraph, setViewMode }) =>
   command((dispatch) => {
     document.getElementById("install-trace").addEventListener("click", () => {
       const label = document.getElementById("trace-label").value.trim();
@@ -36,9 +26,6 @@ export const bindControls = ({ installTrace, extendGraph, sendValue, setViewMode
     });
     document.getElementById("extend-graph").addEventListener("click", () => {
       dispatch(extendGraph(document.getElementById("source").value));
-    });
-    document.getElementById("send-selected").addEventListener("click", () => {
-      dispatch(sendValue(parseValue(document.getElementById("message-value").value)));
     });
     document.getElementById("view-3d").addEventListener("click", () => {
       dispatch(setViewMode("3d"));

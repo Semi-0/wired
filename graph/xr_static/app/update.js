@@ -1,12 +1,78 @@
 import { batch, none, runtimeCommand } from "./combinators.js";
 import { enterXrEffect } from "./effects.js";
-import { reconcileLayout, stepForceLayout } from "./model.js";
+import { graphWithWidgets, reconcileLayout, stepForceLayout, widgetsFromGraph } from "./model.js";
 
 const graphFromPayload = (payload) => {
   if (payload?.result?.graph) return payload.result.graph;
   if (payload?.graph) return payload.graph;
   return null;
 };
+
+const widgetId = (ui) => ui?.widgetId || ui?.["widget-id"] || ui?.id;
+
+const setWidgetChannelValue = (widgets, widgetId, channelName, value) =>
+  Object.fromEntries(
+    Object.entries(widgets || {}).map(([id, widget]) => [
+      id,
+      id === widgetId
+        ? {
+            ...widget,
+            channels: (widget.channels || []).map((channel) =>
+              channel.channel === channelName
+                ? { ...channel, current: value }
+                : channel
+            ),
+          }
+        : widget,
+    ])
+  );
+
+const mergeWidgets = (existing, incoming) => {
+  const merged = { ...(existing || {}) };
+  for (const [id, widget] of Object.entries(incoming || {})) {
+    const previous = merged[id];
+    const previousByChannel = Object.fromEntries(
+      (previous?.channels || []).map((channel) => [channel.channel, channel])
+    );
+    merged[id] = {
+      ...previous,
+      ...widget,
+      channels: (widget.channels || []).map((channel) => {
+        const previousChannel = previousByChannel[channel.channel];
+        return {
+          ...previousChannel,
+          ...channel,
+          current:
+            previousChannel?.current === null || previousChannel?.current === undefined
+              ? channel.current
+              : previousChannel.current,
+        };
+      }),
+    };
+  }
+  return merged;
+};
+
+const graphWithWidgetValue = (graph, widgetId, channelName, value) => ({
+  ...graph,
+  nodes: (graph.nodes || []).map((node) => {
+    const id = widgetIdOfNode(node);
+    if (id !== widgetId) return node;
+    return {
+      ...node,
+      ui: {
+        ...node.ui,
+        channels: (node.ui?.channels || []).map((channel) =>
+          channel.channel === channelName
+            ? { ...channel, current: value }
+            : channel
+        ),
+      },
+    };
+  }),
+});
+
+const widgetIdOfNode = (node) => widgetId(node?.ui);
 
 const nodeFingerprint = (node) =>
   JSON.stringify({ value: node.value || null, label: node.label || "" });
@@ -21,6 +87,16 @@ const cellPulses = (model, graph) => {
       .filter((node) => previous[node.id] !== nodeFingerprint(node))
       .map((node) => [node.id, 0.9])
   );
+};
+
+const explicitCellPulses = (graph) => {
+  const ids = graph?.["changed-node-ids"] || graph?.changedNodeIds || [];
+  return Object.fromEntries(ids.map((id) => [id, 0.9]));
+};
+
+const graphPulses = (model, graph) => {
+  const explicit = explicitCellPulses(graph);
+  return Object.keys(explicit).length > 0 ? explicit : cellPulses(model, graph);
 };
 
 const nearestNode = (model, point) => {
@@ -42,13 +118,6 @@ const nearestNode = (model, point) => {
   return bestD2 < 1.2 ? best : null;
 };
 
-const targetForNode = (node) => {
-  const alias = Array.isArray(node.aliases) ? node.aliases[0] : null;
-  if (alias) return { "cell-id": alias };
-  if (node.label) return { label: node.label };
-  return { "cell-id": node.id };
-};
-
 export const update = (model, msg) => {
   switch (msg.type) {
     case "socket/open":
@@ -66,14 +135,18 @@ export const update = (model, msg) => {
       }
       const graph = graphFromPayload(msg.payload);
       if (!graph) return [model, none()];
-      const nodeCount = graph.nodes?.length || 0;
-      const edgeCount = graph.edges?.length || 0;
+      const incomingWidgets = widgetsFromGraph(graph);
+      const widgets = mergeWidgets(model.widgets, incomingWidgets);
+      const graphWithRegisteredWidgets = graphWithWidgets(graph, widgets);
+      const nodeCount = graphWithRegisteredWidgets.nodes?.length || 0;
+      const edgeCount = graphWithRegisteredWidgets.edges?.length || 0;
       return [
         {
           ...model,
-          graph,
-          layout: reconcileLayout(model.layout, graph),
-          pulses: { ...model.pulses, ...cellPulses(model, graph) },
+          graph: graphWithRegisteredWidgets,
+          widgets,
+          layout: reconcileLayout(model.layout, graphWithRegisteredWidgets),
+          pulses: { ...model.pulses, ...graphPulses(model, graphWithRegisteredWidgets) },
           status: `graph ${nodeCount} nodes / ${edgeCount} edges`,
         },
         none(),
@@ -92,19 +165,21 @@ export const update = (model, msg) => {
         [runtimeCommand("xr/extend-graph", { source: msg.source })],
       ];
 
-    case "cell/send-value": {
-      const node = selectedNode(model);
-      if (!node) return [{ ...model, status: "select a node first" }, none()];
-      return [
-        { ...model, status: `sending value to ${node.label || node.id}` },
-        [
-          runtimeCommand("xr/send-message", {
-            target: targetForNode(node),
-            message: { kind: "value", value: msg.value },
-          }),
-        ],
-      ];
-    }
+    case "widget/input":
+      {
+        const widgets = setWidgetChannelValue(model.widgets, msg.widgetId, msg.channel, msg.value);
+        const graph = graphWithWidgetValue(model.graph, msg.widgetId, msg.channel, msg.value);
+        return [
+          { ...model, widgets, graph, status: `slider ${msg.widgetId}/${msg.channel}: ${msg.value}` },
+          [
+            runtimeCommand("xr/widget-event", {
+              "widget-id": msg.widgetId,
+              channel: msg.channel,
+              value: msg.value,
+            }),
+          ],
+        ];
+      }
 
     case "view/mode":
       if (msg.mode === "xr") {
@@ -123,6 +198,28 @@ export const update = (model, msg) => {
 
     case "xr/pinch": {
       const id = nearestNode(model, msg.point);
+      const node = model.graph.nodes.find((node) => node.id === id);
+      const ui = node?.ui;
+      if (ui?.kind === "widget") {
+        const id = widgetId(ui);
+        const channel = ui.channels?.[0]?.channel || "value";
+        const current = Number(ui.channels?.[0]?.current || 0);
+        const value = Number.isFinite(current) ? current : 0;
+        return [
+          {
+            ...model,
+            selectedId: id || model.selectedId,
+            xr: { ...model.xr, lastPinchAt: msg.at || model.xr.lastPinchAt },
+          },
+          [
+            runtimeCommand("xr/widget-event", {
+              "widget-id": id,
+              channel,
+              value,
+            }),
+          ],
+        ];
+      }
       return [
         {
           ...model,

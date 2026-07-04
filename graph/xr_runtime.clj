@@ -69,6 +69,9 @@
   (cond
     (value/nothing? v) :nothing
     (value/contradiction? v) :contradiction
+    (and (contains? (obj/public-slot-keys v) behavior/base-layer)
+         (contains? (obj/public-slot-keys v) behavior/summary-layer))
+    :behavior-projection
     (tms/distributed-value? v) :tms
     (behavior/behavior-value? v) :behavior
     (net/network? v) :network
@@ -86,6 +89,21 @@
                          current
                          (behavior/base-value current)))}
       records (assoc :retained-count records))))
+
+(defn- behavior-projection-summary
+  [v]
+  (let [retained-count (try
+                         (behavior/summary-retained-count v)
+                         (catch Throwable _ nil))
+        latest-time (try
+                      (behavior/summary-latest-time v)
+                      (catch Throwable _ nil))]
+    (cond-> {:kind "behavior"
+             :current (semantic-repl/display-cell-value (behavior/base-value v))}
+      (some? retained-count) (assoc :retained-count retained-count)
+      (some? latest-time) (assoc :latest-time
+                                 (semantic-repl/display-cell-value
+                                  latest-time)))))
 
 (defn- tms-summary
   [v]
@@ -110,6 +128,7 @@
     (case kind
       :nothing {:kind "nothing"}
       :contradiction {:kind "contradiction"}
+      :behavior-projection (behavior-projection-summary v)
       :tms (tms-summary v)
       :behavior (behavior-summary v)
       :network {:kind "network"}
@@ -117,16 +136,21 @@
        :value (semantic-repl/display-cell-value v)})))
 
 (defn- node-kind
-  [label]
+  [label ui]
   (let [label (str label)]
-    (if (or (str/starts-with? label "app:")
-            (str/starts-with? label "call ")
-            (str/starts-with? label "slot ")
-            (contains? #{"<->" "->" "+" "-" "*" "/" "switch" "trace" "xr-io"
-                         "block-at" "instance" "translate"}
-                       label))
+    (cond
+      (= "widget" (:kind ui)) "widget"
+
+      (or (str/starts-with? label "app:")
+          (str/starts-with? label "call ")
+          (str/starts-with? label "slot ")
+          (contains? #{"<->" "->" "+" "-" "*" "/" "switch" "trace" "xr-io"
+                       "block-at" "instance" "translate" "slider-io"
+                       "slider-panel-io"}
+                     label))
       "propagator"
-      "cell")))
+
+      :else "cell")))
 
 (defn- alias-node-set
   [v]
@@ -145,8 +169,22 @@
                (pr-str id)])
             node-ids)))
 
+(defn- label-rank
+  [label]
+  (cond
+    (or (nil? label) (= "cell" (str label))) 3
+    (str/starts-with? (str label) "cell") 2
+    (str/starts-with? (str label) "slot ") 2
+    :else 0))
+
+(defn- better-label
+  [old new]
+  (if (<= (label-rank new) (label-rank old))
+    new
+    old))
+
 (defn- canonicalize-graph
-  [{:keys [nodes node-aliases values expansions edges] :as graph}]
+  [{:keys [nodes node-aliases values node-ui expansions edges] :as graph}]
   (let [groups (->> (vals node-aliases)
                     (map alias-node-set)
                     (filter #(<= 2 (count %))))
@@ -161,15 +199,17 @@
         canonical (fn [node-id] (get replacements node-id node-id))
         nodes* (reduce (fn [m [id label]]
                          (let [id* (canonical id)]
-                           (if (contains? m id*)
-                             m
-                             (assoc m id* label))))
+                           (update m id* better-label label)))
                        {}
                        nodes)
         values* (reduce (fn [m [id value]]
                           (assoc m (canonical id) value))
                         {}
                         values)
+        node-ui* (reduce (fn [m [id ui]]
+                           (assoc m (canonical id) ui))
+                         {}
+                         node-ui)
         expansions* (reduce (fn [m [id expansion]]
                               (assoc m (canonical id) expansion))
                             {}
@@ -194,39 +234,67 @@
            :nodes nodes*
            :node-aliases node-aliases*
            :values values*
+           :node-ui node-ui*
            :expansions expansions*
            :edges edges*)))
+
+(defn- graph-projection-options
+  [state]
+  {:changed-node-ids (:runtime/changed-node-ids state)
+   :changed-cell-ids (:runtime/changed-cells state)})
+
+(defn- id-string
+  [id]
+  (if (string? id)
+    id
+    (node-id-string id)))
 
 (defn graph->json
   "Project a semantic trace graph into browser-friendly data.
 
   This is data for rendering, not runtime truth."
-  [graph]
+  ([graph]
+   (graph->json graph {}))
+  ([graph {:keys [changed-node-ids changed-cell-ids]}]
   (let [graph (canonicalize-graph graph)
         nodes (:nodes graph)
         values (:values graph)
         aliases (:node-aliases graph)
+        node-ui (:node-ui graph)
         expansions (:expansions graph)]
-    {:graph true
-     :nodes (mapv (fn [[id label]]
-                    (cond-> {:id (node-id-string id)
-                             :label (str label)
-                             :kind (node-kind label)}
-                      (contains? values id)
-                      (assoc :value (value-summary (get values id)))
+    (cond-> {:graph true
+             :widgets (->> node-ui
+                           (keep (fn [[_id ui]]
+                                   (when (= "widget" (:kind ui)) ui)))
+                           vec)
+             :nodes (mapv (fn [[id label]]
+                            (let [ui (get node-ui id)]
+                              (cond-> {:id (node-id-string id)
+                                       :label (str label)
+                                       :kind (node-kind label ui)}
+                                ui
+                                (assoc :ui ui)
 
-                      (contains? aliases id)
-                      (assoc :aliases
-                             (mapv node-id-string (get aliases id)))
+                                (contains? values id)
+                                (assoc :value (value-summary (get values id)))
 
-                      (contains? expansions id)
-                      (assoc :expandable true
-                             :expansion-id (node-id-string id))))
-                  nodes)
-     :edges (mapv (fn [[from to]]
-                    {:from (node-id-string from)
-                     :to (node-id-string to)})
-                  (:edges graph))}))
+                                (contains? aliases id)
+                                (assoc :aliases
+                                       (mapv node-id-string (get aliases id)))
+
+                                (contains? expansions id)
+                                (assoc :expandable true
+                                       :expansion-id (node-id-string id)))))
+                          nodes)
+             :edges (mapv (fn [[from to]]
+                            {:from (node-id-string from)
+                             :to (node-id-string to)})
+                          (:edges graph))}
+      (seq changed-node-ids)
+      (assoc :changed-node-ids (mapv id-string changed-node-ids))
+
+      (seq changed-cell-ids)
+      (assoc :changed-cell-ids (mapv id-string changed-cell-ids))))))
 
 (defn- trace-request
   [{:keys [label node direction] :as command}]
@@ -249,7 +317,7 @@
     {:trace-id trace-id
      :interval-ms (:interval-ms request)
      :request request
-     :graph (graph->json graph)}))
+     :graph (graph->json graph (graph-projection-options @session))}))
 
 (defn xr-trace-read
   [state {:keys [trace-id]}]
@@ -258,11 +326,13 @@
       (throw (ex-info "xr trace not found" {:trace-id trace-id})))
     {:trace-id trace-id
      :request request
-     :graph (graph->json (runtime/semantic-trace state request))}))
+     :graph (graph->json (runtime/semantic-trace state request)
+                         (graph-projection-options state))}))
 
 (defn xr-trace-expand
   [state command]
-  {:graph (graph->json (runtime/semantic-expansion state command))})
+  {:graph (graph->json (runtime/semantic-expansion state command)
+                       (graph-projection-options state))})
 
 (defn xr-extend-graph!
   [session {:keys [source client-id] :or {client-id default-xr-client-id}}]
@@ -274,12 +344,13 @@
                      (str/join "\n" sources)
                      "\n)")]
     (runtime/compile-source! session program)
-    (swap! session assoc :xr (assoc old-xr
-                                    :client-id client-id
-                                    :sources sources
-                                    :program program)))
+    (swap! session update :xr merge (assoc old-xr
+                                           :client-id client-id
+                                           :sources sources
+                                           :program program)))
   {:client-id client-id
-   :graph (graph->json (:graph @session))})
+   :graph (graph->json (:graph @session)
+                       (graph-projection-options @session))})
 
 (defn- message-update
   [{:keys [kind value tick premise epoch active] :as msg}]
@@ -314,9 +385,23 @@
                                     :cell-id cell-id
                                     :update update
                                     :command command})
-    {:target (runtime/read-cell @session {:cell-id (pr-str cell-id)})
-     :graph (graph->json (:graph @session))
+  {:target (runtime/read-cell @session {:cell-id (pr-str cell-id)})
+     :graph (graph->json (:graph @session)
+                         (graph-projection-options @session))
      :command command}))
+
+(defn xr-widget-event!
+  [session {:keys [widget-id channel value] :as command}]
+  (runtime/commit-runtime-input! session
+                                 {:runtime/input :xr/widget-event
+                                  :widget-id widget-id
+                                  :channel (or channel "value")
+                                  :value value
+                                  :command command})
+  {:widgets (get-in @session [:xr :widgets])
+   :graph (graph->json (:graph @session)
+                       (graph-projection-options @session))
+   :command command})
 
 (defn handle-command!
   [session {:keys [op] :as command}]
@@ -326,6 +411,7 @@
     :xr/trace/expand (xr-trace-expand @session command)
     :xr/extend-graph (xr-extend-graph! session command)
     :xr/send-message (xr-send-message! session command)
+    :xr/widget-event (xr-widget-event! session command)
     ;; Delegate existing runtime commands for convenience.
     (:result (runtime/handle-command! session command))))
 

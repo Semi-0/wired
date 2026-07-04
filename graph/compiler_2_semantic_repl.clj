@@ -107,6 +107,7 @@
   {:nodes (:nodes state)
    :node-aliases (state-node-aliases state)
    :values (:values state)
+   :node-ui (:node-ui state)
    :expansions (:expansions state)
    :edges (vec (distinct (:edges state)))})
 
@@ -148,6 +149,7 @@
        :key->id {}
        :nodes {}
        :values {}
+       :node-ui {}
        :expansions {}
        :edges []}
       (declaration-records n)))))
@@ -379,6 +381,7 @@
                                    :key->id {}
                                    :nodes {}
                                    :values {}
+                                   :node-ui {}
                                    :expansions {}
                                    :edges []}
                                   n
@@ -398,6 +401,7 @@
                 :key->id {}
                 :nodes {}
                 :values {}
+                :node-ui {}
                 :expansions {}
                 :edges []}
                (demo/application-records compiled n))]
@@ -411,6 +415,7 @@
      :node-aliases (merge-node-aliases (:node-aliases structural)
                                        (:node-aliases semantic))
      :values (merge (:values semantic) (:values structural))
+     :node-ui (merge (:node-ui semantic) (:node-ui structural))
      :expansions (:expansions semantic)
      :edges (vec (distinct (concat (:edges semantic) (:edges structural))))}))
 

@@ -2,6 +2,7 @@ export const initialModel = () => ({
   connected: false,
   status: "disconnected",
   graph: { nodes: [], edges: [] },
+  widgets: {},
   layout: {},
   pulses: {},
   selectedId: null,
@@ -13,6 +14,51 @@ export const nodeLabel = (node) => node.label || node.id;
 
 export const selectedNode = (model) =>
   model.graph.nodes.find((node) => node.id === model.selectedId) || null;
+
+const normalizeWidget = (widget, nodeId = null) => {
+  const channels = Array.isArray(widget.channels)
+    ? widget.channels
+    : Object.values(widget.channels || {});
+  return {
+    ...widget,
+    widgetId: widget.widgetId || widget["widget-id"] || widget.id,
+    nodeId: nodeId || widget.nodeId || widget["node-id"] || null,
+    channels,
+  };
+};
+
+export const widgetsFromGraph = (graph) =>
+  Object.fromEntries([
+    ...(graph.widgets || [])
+      .map((widget) => normalizeWidget(widget))
+      .filter((widget) => widget.widgetId)
+      .map((widget) => [widget.widgetId, widget]),
+    ...(graph.nodes || [])
+      .filter((node) =>
+        (node.kind === "widget" || node.ui?.kind === "widget") &&
+        (node.ui?.widgetId || node.ui?.["widget-id"] || node.ui?.id)
+      )
+      .map((node) => normalizeWidget(node.ui, node.id))
+      .filter((widget) => widget.widgetId)
+      .map((widget) => [widget.widgetId, widget]),
+  ]);
+
+export const graphWithWidgets = (graph, widgets) => {
+  const nodes = [...(graph.nodes || [])];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  for (const widget of Object.values(widgets || {})) {
+    const id = widget.nodeId || `widget:${widget.widgetId}`;
+    if (!id || nodeIds.has(id)) continue;
+    nodes.push({
+      id,
+      label: widget.widgetId,
+      kind: "widget",
+      ui: widget,
+    });
+    nodeIds.add(id);
+  }
+  return { ...graph, nodes };
+};
 
 export const reconcileLayout = (layout, graph) => {
   const next = {};

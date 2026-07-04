@@ -5,7 +5,12 @@ export const Msg = {
   SocketMessage: (payload) => ({ type: "socket/message", payload }),
   InstallTrace: (label) => ({ type: "trace/install", label }),
   ExtendGraph: (source) => ({ type: "graph/extend", source }),
-  SendValue: (value) => ({ type: "cell/send-value", value }),
+  WidgetInput: (widgetId, channel, value) => ({
+    type: "widget/input",
+    widgetId,
+    channel,
+    value,
+  }),
   SetViewMode: (mode) => ({ type: "view/mode", mode }),
   Tick: (dt) => ({ type: "tick", dt }),
   SelectNode: (id) => ({ type: "select/node", id }),

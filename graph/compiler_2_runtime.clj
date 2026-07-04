@@ -1,7 +1,9 @@
 (ns graph.compiler-2-runtime
   "Shared compiler-2 runtime session for socket clients."
-  (:require [clojure.walk :as walk]
+  (:require [clojure.set :as set]
+            [clojure.walk :as walk]
             [graph.compiler-2-semantic-repl :as semantic-repl]
+            [graph.compiler-2-runtime.widget :as runtime-widget]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell :as cell]
             [propagators.cells.cell-protocol :as cell-protocol]
@@ -25,6 +27,8 @@
 
 (defn new-session []
   (atom nil))
+
+(def default-xr-client-id "xr")
 
 (defn- stable-node-id
   [& parts]
@@ -69,14 +73,41 @@
 
 (defn- runtime-compiler-env []
   ((requiring-resolve
-    'propagators.compiler-2.behavior/bind-behavior-construction-operators)
+    'propagators.compiler-2.behavior/bind-behavior-operators)
    (compiler-helpers/default-env)))
+
+(declare empty-graph
+         empty-state
+         perform-boundary-effects
+         runtime-env
+         settle-application-props)
 
 (defn- compiled-state
   [source]
-  (let [[_compiled-stage expanded-stage] (demo/compiled-progression source)
-        compiled (:compiled expanded-stage)
-        network (install-runtime-protocols (:network expanded-stage))
+  (let [graph-id (runtime-graph-id)
+        base-state (empty-state)
+        base-net (-> (:program/net base-state)
+                     (nb/ensure-cell (boundary-outbox-id))
+                     (nb/install-cell graph-id
+                                      (semantic-trace/graph-union (empty-graph))
+                                      (semantic-trace/graph-union (empty-graph))))
+        env (runtime-env base-state
+                         (:program/env base-state)
+                         graph-id
+                         default-xr-client-id)
+        compiled (compiler/compile-source source
+                                          env
+                                          {:net base-net
+                                           :seed [:runtime/xr source]})
+        network0 (nb/run-propagators (:net compiled) (:props compiled))
+        [tasks network1] (core/eval-cells
+                          [(message graph-id
+                                    (semantic-repl/compiled-semantic-graph
+                                     compiled
+                                     network0))]
+                          network0)
+        network2 (core/run-tasks tasks network1)
+        network (settle-application-props network2 (:props compiled))
         graph (assoc (semantic-repl/compiled-semantic-graph compiled network)
                      :source source)]
     {:source source
@@ -116,7 +147,8 @@
   [session source]
   (doseq [{:keys [stop]} (vals (:traces @session))]
     (when stop (stop)))
-  (let [state (assoc (compiled-state source) :traces {})]
+  (let [state (perform-boundary-effects
+               (assoc (compiled-state source) :traces {}))]
     (reset! session state)
     (:graph state)))
 
@@ -730,6 +762,12 @@
     (cenv/bind-at env 'trace-target (trace-target-operator) 0)
     (cenv/bind-at env 'trace (trace-operator graph-id) 0)
     (cenv/bind-at env 'xr-io (xr-io-operator (boundary-outbox-id)) 0)
+    (cenv/bind-at env 'slider-io
+                  (runtime-widget/slider-io-operator (boundary-outbox-id))
+                  0)
+    (cenv/bind-at env 'slider-panel-io
+                  (runtime-widget/slider-panel-io-operator (boundary-outbox-id))
+                  0)
     (cenv/bind-at env 'translate (translate-operator) 0)
     (reduce-kv (fn [e client-id {:keys [instance-id]}]
                  (cenv/bind-at e
@@ -756,19 +794,30 @@
         (nb/run-propagators props)
         (nb/run-propagators props))))
 
-(defn- top-level-declaration? [source]
+(defn- top-level-form-head
+  [source]
   (try
     (let [form (compiler-parser/read-form source)]
-      (and (seq? form)
-           (contains? '#{def def-cell def-net <-> block-at translate}
-                      (first form))))
+      (when (seq? form)
+        (first form)))
     (catch Throwable _
-      false)))
+      nil)))
+
+(defn- top-level-declaration? [source]
+  (contains? '#{def def-cell def-net <-> -> block-at translate trace}
+             (top-level-form-head source)))
 
 (defn- trace-source? [source]
+  (= 'trace (top-level-form-head source)))
+
+(defn- trace-form? [source]
   (try
     (let [form (compiler-parser/read-form source)]
-      (and (seq? form) (= 'trace (first form))))
+      (boolean
+       (some (fn [x]
+               (and (seq? x)
+                    (= 'trace (first x))))
+             (tree-seq coll? seq form))))
     (catch Throwable _
       false)))
 
@@ -808,6 +857,8 @@
   (try
     (let [source (normalize-trace-source source)
           source (auto-output-source state block source)
+          needs-live-graph? (trace-form? source)
+          top-level-trace? (trace-source? source)
           graph-id (runtime-graph-id)
           env (runtime-env state (:program/env state) graph-id (:client-id block))
           program-net-input (nb/install-cell (:program/net state)
@@ -820,25 +871,36 @@
                     {:net program-net-input
                      :seed [:runtime/block (:order block) (:epoch block)]})
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
-          graph* (namespace-graph
-                  (semantic-repl/compiled-semantic-graph compiled program-net0)
-                  (str (:client-id block) "-" (:order block)))
-          graph (assoc (semantic-trace/graph-union
-                        (:graph state)
-                        graph*)
-                       :source source)
-          [tasks program-net1] (core/eval-cells [(message graph-id graph)]
+          program-net2 (if (and needs-live-graph?
+                                (not top-level-trace?))
+                         (let [graph* (namespace-graph
+                                       (semantic-repl/compiled-semantic-graph
+                                        compiled
+                                        program-net0)
+                                       (str (:client-id block) "-"
+                                            (:order block)))
+                               graph (assoc (semantic-trace/graph-union
+                                             (:graph state)
+                                             graph*)
+                                            :source source)
+                               [tasks program-net1]
+                               (core/eval-cells [(message graph-id graph)]
                                                 (nb/ensure-cell program-net0
-                                                                graph-id))
-          program-net2 (core/run-tasks tasks program-net1)
+                                                                graph-id))]
+                           (core/run-tasks tasks program-net1))
+                         program-net0)
           program-net (settle-application-props program-net2 (:props compiled))
-          graph* (namespace-graph
-                  (semantic-repl/compiled-semantic-graph compiled program-net)
-                  (str (:client-id block) "-" (:order block)))
-          graph (assoc (semantic-trace/graph-union
-                        (:graph state)
-                        graph*)
-                       :source source)
+          graph (if top-level-trace?
+                  (assoc (:graph state) :source source)
+                  (let [graph* (namespace-graph
+                                (semantic-repl/compiled-semantic-graph
+                                 compiled
+                                 program-net)
+                                (str (:client-id block) "-" (:order block)))]
+                    (assoc (semantic-trace/graph-union
+                            (:graph state)
+                            graph*)
+                           :source source)))
           result (compiled-result-value compiled program-net)
           result-key [(:client-id block) (:index block)]]
       (-> state
@@ -861,7 +923,8 @@
   [state epoch block]
   (let [source (block-text state block)]
     (if (or (value/unusable? source)
-            (not (string? source)))
+            (not (string? source))
+            (trace-source? source))
       state
       (compile-program-form state block epoch source))))
 
@@ -981,6 +1044,155 @@
             (update-in [:tui :effects] (fnil conj []) request)))
       state)))
 
+(defn- display-widget-value
+  [v]
+  (when-not (value/unusable? v)
+    (semantic-repl/display-cell-value v)))
+
+(defn- widget-node-id
+  [widget-id]
+  (stable-node-id :xr :widget widget-id))
+
+(defn- graph-cell-node-id
+  [graph cell-id]
+  (or (first (sort-by pr-str (get-in graph [:node-aliases cell-id])))
+      (stable-node-id :xr :widget-cell cell-id)))
+
+(defn- graph-cell-node-ids
+  [graph cell-id]
+  (let [aliases (get-in graph [:node-aliases cell-id])]
+    (if (seq aliases)
+      aliases
+      #{})))
+
+(defn- ensure-graph-cell-node
+  [graph label cell-id]
+  (let [node-id (graph-cell-node-id graph cell-id)]
+    (-> graph
+        (assoc-in [:nodes node-id] (or label "cell"))
+        (update-in [:node-aliases cell-id] (fnil conj #{}) node-id))))
+
+(defn- assoc-graph-cell-value
+  [state cell-id]
+  (let [label (get (labels state) cell-id)
+        graph0 (ensure-graph-cell-node (:graph state) label cell-id)
+        node-id (graph-cell-node-id graph0 cell-id)
+        strongest (net/network-cell-strongest (:program/net state) cell-id)
+        graph1 (if (value/unusable? strongest)
+                 (update graph0 :values dissoc node-id)
+                 (assoc-in graph0 [:values node-id] strongest))]
+    (assoc state
+           :graph graph1
+           :program/graph graph1)))
+
+(defn- program-strongest-snapshot
+  [program-net]
+  (into {}
+        (keep (fn [[id entry]]
+                (when (cell/cell? entry)
+                  [id (cell/cell-strongest entry)])))
+        (net/net-env program-net)))
+
+(def ^:private missing-cell ::missing-cell)
+
+(defn- changed-cell-ids
+  [before after]
+  (->> (set/union (set (keys before)) (set (keys after)))
+       (filter (fn [id]
+                 (not (value/cell-value-equal?
+                       (get before id missing-cell)
+                       (get after id missing-cell)))))
+       (sort-by pr-str)
+       vec))
+
+(defn- record-runtime-transaction
+  [state before-program-net]
+  (let [before (if before-program-net
+                 (program-strongest-snapshot before-program-net)
+                 {})
+        after (program-strongest-snapshot (:program/net state))
+        graph (:graph state)
+        changed (changed-cell-ids before after)
+        pairs (keep (fn [cell-id]
+                      (let [node-ids (seq (graph-cell-node-ids graph cell-id))]
+                        (when node-ids
+                          [cell-id node-ids])))
+                    changed)
+        cells (mapv first pairs)
+        nodes (->> pairs
+                   (mapcat second)
+                   distinct
+                   vec)]
+    (assoc state
+           :runtime/changed-cells cells
+           :runtime/changed-node-ids nodes)))
+
+(defn- widget-channel-view
+  [state {:keys [widget/channel widget/view-cell widget/event-cell widget/view-value]}]
+  (let [labels (labels state)]
+    {:channel (str channel)
+     :view-cell view-cell
+     :view-cell-id (pr-str view-cell)
+     :view-label (get labels view-cell)
+     :event-cell event-cell
+     :event-cell-id (pr-str event-cell)
+     :event-label (get labels event-cell)
+     :current (display-widget-value view-value)}))
+
+(defn- widget-ui
+  [widget-type widget-id channels]
+  {:kind "widget"
+   :type (name widget-type)
+   :widget-id (str widget-id)
+   :channels (mapv #(select-keys %
+                                 [:channel
+                                  :view-label
+                                  :event-label
+                                  :current])
+                   channels)})
+
+(defn- add-widget-to-graph
+  [state widget-type widget-id channels]
+  (let [node-id (widget-node-id widget-id)
+        graph0 (:graph state)
+        graph1 (assoc-in graph0 [:nodes node-id] (str widget-id))
+        graph2 (assoc-in graph1 [:node-ui node-id] (widget-ui widget-type
+                                                              widget-id
+                                                              channels))
+        graph3 (reduce
+                (fn [graph {:keys [view-cell event-cell view-label event-label]}]
+                  (let [view-node (graph-cell-node-id graph view-cell)
+                        event-node (graph-cell-node-id graph event-cell)]
+                    (-> graph
+                        (ensure-graph-cell-node view-label view-cell)
+                        (ensure-graph-cell-node event-label event-cell)
+                        (update :edges (fnil into [])
+                                [[view-node node-id]
+                                 [node-id event-node]]))))
+                graph2
+                channels)]
+    (assoc state
+           :graph graph3
+           :program/graph graph3)))
+
+(defn- record-widget-register
+  [state request]
+  (let [{:widget/keys [type id channels]} (:boundary/payload request)
+        widget-id (str id)
+        channels* (mapv #(widget-channel-view state %) channels)
+        channel-map (into {}
+                          (map (fn [channel]
+                                 [(:channel channel) channel]))
+                          channels*)]
+    (-> state
+        (assoc-in [:xr :widgets widget-id]
+                  {:id widget-id
+                   :type (name type)
+                   :channels channel-map
+                   :epoch (:boundary/epoch request)})
+        (update-in [:xr :effects] (fnil conj []) request)
+        (add-widget-to-graph type widget-id channels*))))
+
 (defn- graph-size
   [request]
   (let [payload (:boundary/payload request)
@@ -1022,6 +1234,7 @@
   (reduce (fn [s request]
             (case [(:boundary/port request) (:boundary/kind request)]
               [:xr :xr/launch-trace] (record-xr-launch s request)
+              [:xr :xr/widget-register] (record-widget-register s request)
               [:tui :tui/write-block] (record-tui-write s request)
               s))
           state
@@ -1047,20 +1260,90 @@
   [state]
   (perform-boundary-effects (refresh-program-graph state)))
 
+(defn- next-widget-epoch
+  [state widget-id]
+  (inc (long (get-in state [:xr :widget-epochs widget-id] 0))))
+
+(defn- widget-channel
+  [state widget-id channel]
+  (or (get-in state [:xr :widgets widget-id :channels channel])
+      (throw (ex-info "xr widget channel not found"
+                      {:widget-id widget-id
+                       :channel channel}))))
+
+(defn- annotate-widget-cell-values
+  [state widget-id]
+  (let [channels (vals (get-in state [:xr :widgets widget-id :channels]))
+        cell-ids (distinct (mapcat (juxt :event-cell :view-cell) channels))]
+    (reduce (fn [s cell-id]
+              (if cell-id
+                (assoc-graph-cell-value s cell-id)
+                s))
+            state
+            cell-ids)))
+
 (defn commit-runtime-input
   "Commit an external cell message into the runtime model, then propagate/effect."
   [state input]
   (case (:runtime/input input)
     (:cell-message :xr/message)
-    (let [cell-id (:cell-id input)
+    (let [before-net (:program/net state)
+          cell-id (:cell-id input)
           update-value (:update input)
           n0 (nb/ensure-cell (:program/net state) cell-id)
           [tasks n1] (core/eval-cells [(message cell-id update-value)] n0)
-          n2 (core/run-tasks tasks n1)]
+          n2 (core/run-tasks tasks n1)
+          n3 (settle-application-props n2 [])]
       (-> state
-          (assoc :program/net n2)
+          (assoc :program/net n3)
           (update :runtime/inputs (fnil conj []) input)
-          run-runtime-cycle))
+          run-runtime-cycle
+          (record-runtime-transaction before-net)))
+
+    :xr/widget-event
+    (let [before-net (:program/net state)
+          widget-id (str (:widget-id input))
+          channel (str (or (:channel input) "value"))
+          _widget-channel (widget-channel state widget-id channel)
+          epoch (next-widget-epoch state widget-id)
+          latest-values (assoc (get-in state [:xr :widget-latest widget-id] {})
+                               channel
+                               (:value input))
+          channels (get-in state [:xr :widgets widget-id :channels])
+          updates (vec
+                   (keep (fn [[channel-name channel-info]]
+                           (when (contains? latest-values channel-name)
+                             {:channel channel-name
+                              :cell-id (:event-cell channel-info)
+                              :value (get latest-values channel-name)
+                              :update (obj/compound-object
+                                       {epoch (get latest-values channel-name)})}))
+                         channels))
+          n0 (reduce (fn [n {:keys [cell-id]}]
+                       (nb/ensure-cell n cell-id))
+                     (:program/net state)
+                     updates)
+          [tasks n1] (core/eval-cells
+                      (mapv (fn [{:keys [cell-id update]}]
+                              (message cell-id update))
+                            updates)
+                      n0)
+          n2 (core/run-tasks tasks n1)
+          n3 (settle-application-props n2 [])]
+      (-> state
+          (assoc :program/net n3)
+          (assoc-in [:xr :widget-epochs widget-id] epoch)
+          (assoc-in [:xr :widget-latest widget-id] latest-values)
+          (update :runtime/inputs (fnil conj [])
+                  (assoc input
+                         :runtime/input :xr/widget-event
+                         :widget-id widget-id
+                         :channel channel
+                         :epoch epoch
+                         :updates updates))
+          run-runtime-cycle
+          (annotate-widget-cell-values widget-id)
+          (record-runtime-transaction before-net)))
 
     (throw (ex-info "unsupported runtime input" {:input input}))))
 
@@ -1071,7 +1354,13 @@
 
 (defn- rebuild-program!
   [session]
-  (swap! session #(perform-boundary-effects (rebuild-program-state %)))
+  (swap! session
+         (fn [state]
+           (let [before-net (:program/net state)]
+             (-> state
+                 rebuild-program-state
+                 perform-boundary-effects
+                 (record-runtime-transaction before-net)))))
   @session)
 
 (defn- trace-via-propagator
@@ -1413,6 +1702,8 @@
     (let [referenced-indexes (referenced-block-indexes state (:blocks tui))]
       {:client-id client-id
        :view-id (pr-str (:view-id tui))
+       :changed-cells (mapv pr-str (:runtime/changed-cells state))
+       :changed-node-ids (mapv pr-str (:runtime/changed-node-ids state))
        :blocks (mapv (fn [block]
                        {:index (:index block)
                         :block-id (pr-str (:block-id block))
@@ -1445,6 +1736,9 @@
   [state]
   {:effects (vec (get-in (require-state state) [:xr :effects] []))
    :launched (vals (get-in state [:xr :launched] {}))
+   :widgets (get-in state [:xr :widgets] {})
+   :changed-cells (mapv pr-str (:runtime/changed-cells state))
+   :changed-node-ids (mapv pr-str (:runtime/changed-node-ids state))
    :tui-effects (vec (get-in state [:tui :effects] []))})
 
 (defn read-xr-effects

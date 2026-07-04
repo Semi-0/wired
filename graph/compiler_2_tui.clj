@@ -106,6 +106,11 @@
   [state]
   (configure-viewport state (viewport/viewport-content (:viewport state))))
 
+(defn- render-view-needed?
+  [state view-changed?]
+  (or view-changed?
+      (:error state)))
+
 (def ^:private resize-render-delay-ms 120)
 
 (defn- resize-render-cmd
@@ -188,7 +193,8 @@
               view-changed? (not= view (:view state))
               state' (update-input-prompt
                       (assoc state :view view :error nil))
-              state'' (if (:resize/target state')
+              state'' (if (or (:resize/target state')
+                              (not (render-view-needed? state view-changed?)))
                         state'
                         (configure-viewport
                          state'

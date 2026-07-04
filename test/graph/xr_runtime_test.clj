@@ -1,11 +1,13 @@
 (ns graph.xr-runtime-test
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime-server :as runtime-server]
             [graph.json :as json]
             [graph.xr-runtime :as xr]
             [graph.xr-server :as xr-server]
+            [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
@@ -18,6 +20,37 @@
 (defn- cell-id
   [session label]
   (cenv/binding-id (cenv/lookup (:program/env @session) (symbol label))))
+
+(defn- raw-graph-value-for-cell
+  [session cell-id]
+  (let [graph (:graph @session)
+        node-id (first (sort-by pr-str (get-in graph [:node-aliases cell-id])))]
+    (get-in graph [:values node-id])))
+
+(defn- projected-node-for-cell
+  [projected cell-id]
+  (let [cell-id* (pr-str cell-id)]
+    (some (fn [node]
+            (when (some #{cell-id*} (:aliases node))
+              node))
+          (get-in projected [:graph :nodes]))))
+
+(defn- behavior-current
+  [session label]
+  (let [id (cell-id session label)
+        content (net/network-cell-content (:program/net @session) id)
+        current (behavior/strongest-value content)]
+    (when-not (value/unusable? current)
+      (behavior/base-value current))))
+
+(def behavior-widget-source
+  "(def events)
+   (def out)
+   (def widget)
+   (def-net retain-event [acc update] [out]
+     (behavior-add-event acc update out))
+   (behavior events retain-event (behavior-empty-state) out)
+   (slider-io \"gain\" out events widget)")
 
 (deftest xr-json-round-trips-runtime-command-shape
   (let [command {:op "xr/send-message"
@@ -162,6 +195,198 @@
                       (net/network-cell-content (:program/net @session) id))
                      (tms/premise-slot-key "p/a" 1))))))
 
+(deftest slider-io-registers-widget-through-boundary-effect
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source behavior-widget-source})
+    (let [widget (get-in @session [:xr :widgets "gain"])
+          channel (get-in widget [:channels "value"])]
+      (is (= "slider" (:type widget)))
+      (is (= (cell-id session "events") (:event-cell channel)))
+      (is (= (cell-id session "out") (:view-cell channel)))
+      (is (some #(= :xr/widget-register (:boundary/kind %))
+                (get-in @session [:xr :effects]))))))
+
+(deftest xr-widget-event-rejects-unknown-widget-without-mutating
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source behavior-widget-source})
+    (let [before (:program/net @session)]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"xr widget channel not found"
+           (xr/handle-command! session
+                               {:op :xr/widget-event
+                                :widget-id "missing"
+                                :channel "value"
+                                :value 42})))
+      (is (= before (:program/net @session))))))
+
+(deftest slider-widget-events-inject-behavior-source-epochs
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source behavior-widget-source})
+    (xr/handle-command! session
+                        {:op :xr/widget-event
+                         :widget-id "gain"
+                         :channel "value"
+                         :value 9})
+    (xr/handle-command! session
+                        {:op :xr/widget-event
+                         :widget-id "gain"
+                         :channel "value"
+                         :value 11})
+    (let [events-id (cell-id session "events")
+          events (net/network-cell-strongest (:program/net @session) events-id)]
+      (is (= 9 (obj/slot-value events 1)))
+      (is (= 11 (obj/slot-value events 2)))
+      (is (= 11 (behavior-current session "out"))))))
+
+(deftest xr-widget-projection-uses-strongest-not-behavior-content
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source behavior-widget-source})
+    (xr/handle-command! session
+                        {:op :xr/widget-event
+                         :widget-id "gain"
+                         :channel "value"
+                         :value 9})
+    (let [projected (xr/handle-command! session
+                                        {:op :xr/widget-event
+                                         :widget-id "gain"
+                                         :channel "value"
+                                         :value 11})
+          out-id (cell-id session "out")
+          content (net/network-cell-content (:program/net @session) out-id)
+          strongest (net/network-cell-strongest (:program/net @session) out-id)
+          raw-graph-value (raw-graph-value-for-cell session out-id)
+          projected-node (projected-node-for-cell projected out-id)]
+      (is (= 2 (count (behavior/history-records content))))
+      (is (not= content strongest))
+      (is (= strongest raw-graph-value))
+      (is (= {:kind "behavior"
+              :current "11"
+              :retained-count 2
+              :latest-time "2"}
+             (:value projected-node))))))
+
+(deftest slider-panel-routes-multiple-channels
+  (let [session (runtime/new-session)
+        source "(def ea)
+                (def eb)
+                (def ec)
+                (def widget)
+                (slider-panel-io \"panel\" \"a\" ea ea \"b\" eb eb \"c\" ec ec widget)"]
+    (xr/handle-command! session {:op :xr/extend-graph :source source})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "panel"
+                                 :channel "a"
+                                 :value 10})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "panel"
+                                 :channel "b"
+                                 :value 20})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "panel"
+                                 :channel "c"
+                                 :value 30})
+    (is (= 10 (obj/slot-value
+               (net/network-cell-strongest (:program/net @session)
+                                           (cell-id session "ea"))
+               3)))
+    (is (= 20 (obj/slot-value
+               (net/network-cell-strongest (:program/net @session)
+                                           (cell-id session "eb"))
+               3)))
+    (is (= 30 (obj/slot-value
+               (net/network-cell-strongest (:program/net @session)
+                                           (cell-id session "ec"))
+               3)))))
+
+(def complex-widget-behavior-source
+  "(def a-events)
+   (def b-events)
+   (def c-events)
+   (def a)
+   (def b)
+   (def c)
+   (def out)
+   (def widget)
+   (def-net retain-event [acc update] [out]
+     (behavior-add-event acc update out))
+   (behavior a-events retain-event (behavior-empty-state) a)
+   (behavior b-events retain-event (behavior-empty-state) b)
+   (behavior c-events retain-event (behavior-empty-state) c)
+   (slider-panel-io \"mix\" \"a\" a a-events \"b\" b b-events \"c\" c c-events widget)
+   (<-> (- (+ a b) c) out)")
+
+(deftest widget-events-drive-complex-behavior-arithmetic-chain
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source complex-widget-behavior-source})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "a" :value 10})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "b" :value 4})
+    (let [projected (xr/handle-command! session {:op :xr/widget-event
+                                                 :widget-id "mix" :channel "c" :value 3})
+          current-values (set (keep #(get-in % [:value :current])
+                                    (get-in projected [:graph :nodes])))]
+      (is (set/subset? #{"10" "4" "3"} current-values)))
+    (is (= 11 (behavior-current session "out")))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "a" :value 20})
+    (is (= 21 (behavior-current session "out")))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "c" :value 7})
+    (is (= 17 (behavior-current session "out")))))
+
+(deftest widget-event-transaction-marks-downstream-output-node
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source complex-widget-behavior-source})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "a" :value 10})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "b" :value 4})
+    (let [projected (xr/handle-command! session {:op :xr/widget-event
+                                                 :widget-id "mix"
+                                                 :channel "c"
+                                                 :value 3})
+          out-id (cell-id session "out")
+          out-node (projected-node-for-cell projected out-id)
+          changed-cells (set (get-in projected [:graph :changed-cell-ids]))
+          changed-nodes (set (get-in projected [:graph :changed-node-ids]))]
+      (is out-node)
+      (is (contains? changed-cells (pr-str out-id)))
+      (is (contains? changed-nodes (:id out-node)))
+      (is (< 1 (count changed-cells))))))
+
+(deftest xr-trace-projects-widget-nodes-and-metadata
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source complex-widget-behavior-source})
+    (let [trace (xr/handle-command! session
+                                    {:op :xr/trace/install
+                                     :label "out"
+                                     :direction :upstream})
+          nodes (get-in trace [:graph :nodes])
+          widget-node (some #(when (= "widget" (:kind %)) %) nodes)
+          labels (frequencies (map :label nodes))]
+      (is widget-node)
+      (is (= "slider-panel" (get-in widget-node [:ui :type])))
+      (is (= "mix" (get-in widget-node [:ui :widget-id])))
+      (is (= #{"a" "b" "c"}
+             (set (map :channel (get-in widget-node [:ui :channels])))))
+      (is (= 1 (get labels "out"))))))
+
 (deftest xr-trace-install-and-read-projects-semantic-graph-json
   (let [session (runtime/new-session)]
     (xr/handle-command! session {:op :xr/extend-graph :source "(def a)"})
@@ -253,6 +478,31 @@
       (is (= :xr/launch-trace (get-in effects [:effects 0 :boundary/kind])))
       (is (= :delivered (:boundary/status receipt)))
       (is (= :xr (:boundary/port receipt))))))
+
+(deftest tui-submit-xr-io-records-runtime-transaction
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/submit-tui-block! session {:client-id "A" :text "(def a)"})
+    (runtime/submit-tui-block! session {:client-id "A" :text "(<-> 42 a)"})
+    (runtime/submit-tui-block! session {:client-id "A" :text "(def receipt)"})
+    (let [view (runtime/submit-tui-block!
+                session
+                {:client-id "A"
+                 :text "(let-cell [g]
+                          (trace a g)
+                          (xr-io g receipt)
+                          receipt)"})
+          effects (:result (runtime/handle-command! session {:op :xr/effects}))
+          launch (first (:effects effects))
+          graph (get-in launch [:boundary/payload :graph])]
+      (is (seq (:blocks view)))
+      (is (seq (:changed-cells view)))
+      (is (seq (:changed-node-ids view)))
+      (is (= :xr/launch-trace (:boundary/kind launch)))
+      (is (seq (:nodes graph)))
+      (is (every? (fn [[_node-id v]]
+                    (not (behavior/behavior-value? v)))
+                  (:values graph))))))
 
 (deftest runtime-server-can-start-xr-with-shared-session
   (let [server (runtime-server/start-server-with-xr 0 0)]

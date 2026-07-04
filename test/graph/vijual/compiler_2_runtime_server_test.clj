@@ -537,6 +537,34 @@
     (is (str/includes? (style/strip-ansi (tui/view typed)) "> a"))
     (is (str/includes? (style/strip-ansi (tui/view refreshed)) "[1]> "))))
 
+(deftest charm-tui-refresh-skips-render-for-unchanged-view
+  (let [renders (atom 0)
+        view-a {:blocks [{:index 0 :value "a"}]}
+        view-b {:blocks [{:index 0 :value "b"}]}
+        model (tui/init-model {:client-id "skip-render" :poll-ms 10})]
+    (with-redefs [tui/render-view (fn
+                                    ([_view] "rendered")
+                                    ([_view _viewport-size]
+                                     (swap! renders inc)
+                                     "rendered"))]
+      (let [[first-refresh _] (tui/update-fn model
+                                             {:type :runtime/view
+                                              :response {:ok true
+                                                         :result view-a}})]
+        (is (= 1 @renders))
+        (let [[same-refresh _] (tui/update-fn first-refresh
+                                              {:type :runtime/view
+                                               :response {:ok true
+                                                          :result view-a}})]
+          (is (= 1 @renders))
+          (is (= view-a (:view same-refresh)))
+          (let [[changed-refresh _] (tui/update-fn same-refresh
+                                                   {:type :runtime/view
+                                                    :response {:ok true
+                                                               :result view-b}})]
+            (is (= 2 @renders))
+            (is (= view-b (:view changed-refresh)))))))))
+
 (deftest charm-tui-resize-render-waits-for-latest-dimensions
   (let [model (tui/init-model {:client-id "resize" :poll-ms 10})
         [refreshed _] (tui/update-fn model

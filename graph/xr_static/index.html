@@ -27,18 +27,15 @@
 (-> 42 out)</textarea>
         </label>
         <button id="extend-graph">Extend graph</button>
-        <label>
-          Message value
-          <input id="message-value" value="99" />
-        </label>
-        <button id="send-selected">Send to selected</button>
+        <div id="widgets" class="widgets"></div>
         <pre id="selection">no selection</pre>
       </aside>
     </main>
     <script type="importmap">
       {
         "imports": {
-          "three": "https://unpkg.com/three@0.166.1/build/three.module.js"
+          "three": "https://unpkg.com/three@0.166.1/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.166.1/examples/jsm/"
         }
       }
     </script>

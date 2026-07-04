@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Msg } from "./msg.js";
 import { nodeLabel, selectedNode } from "./model.js";
 
@@ -22,6 +23,21 @@ const makeLabel = (text) => {
 const isPropagator = (node) =>
   node.kind === "propagator" ||
   String(node.label || "").startsWith("app:");
+
+const isWidget = (node) => node.kind === "widget" || node.ui?.kind === "widget";
+
+const widgetId = (node) => node?.ui?.widgetId || node?.ui?.["widget-id"] || node?.ui?.id;
+
+const widgetChannels = (node) =>
+  Array.isArray(node?.ui?.channels) && node.ui.channels.length > 0
+    ? node.ui.channels
+    : [{ channel: "value", current: 0 }];
+
+const channelValueAt = (node, index) => {
+  const raw = widgetChannels(node)[index]?.current;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+};
 
 const makeMaterial = () =>
   new THREE.MeshStandardMaterial({
@@ -73,31 +89,36 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
   const arrowAxis = new THREE.Vector3(0, 1, 0);
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
-  const controls = {
-    target: new THREE.Vector3(0, 0, 0),
-    radius: 8,
-    theta: 0,
-    phi: 1.25,
-    dragging: false,
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = true;
+  controls.mouseButtons = {
+    LEFT: THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.DOLLY,
+    RIGHT: THREE.MOUSE.PAN,
+  };
+  controls.touches = {
+    ONE: THREE.TOUCH.ROTATE,
+    TWO: THREE.TOUCH.DOLLY_PAN,
+  };
+  controls.target.set(0, 0, 0);
+  const interaction = {
     moved: false,
-    mode: "rotate",
-    lastX: 0,
-    lastY: 0,
     userAdjusted: false,
     framedGraphKey: "",
+    widgetDrag: null,
+    widgetChannel: null,
+    pointerId: null,
   };
+  let lastModel = null;
 
-  const updateCamera = () => {
-    const sinPhi = Math.sin(controls.phi);
-    camera.position.set(
-      controls.target.x + controls.radius * sinPhi * Math.sin(controls.theta),
-      controls.target.y + controls.radius * Math.cos(controls.phi),
-      controls.target.z + controls.radius * sinPhi * Math.cos(controls.theta)
-    );
-    camera.lookAt(controls.target);
+  const updateLight = () => {
     keyLight.position.copy(camera.position);
   };
-  updateCamera();
+  camera.position.set(3.4, 1.7, 7.2);
+  controls.update();
+  updateLight();
 
   const resize = () => {
     const { width, height } = root.getBoundingClientRect();
@@ -112,59 +133,103 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     event.preventDefault();
   });
 
+  const nearestHit = (event) => {
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects([...nodeMeshes.values()], false);
+    return hits[0] || null;
+  };
+
+  const widgetInputValue = (node, event) => {
+    const hit = nearestHit(event);
+    if (hit?.object?.userData?.nodeId === node?.id) {
+      const local = hit.object.worldToLocal(hit.point.clone());
+      const x = Math.max(0, Math.min(1, (local.x + 0.37) / 0.74));
+      return Math.round(x * 100);
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
+    return Math.round(x * 100);
+  };
+
+  const widgetChannelForEvent = (node, event) => {
+    const channels = widgetChannels(node);
+    const hit = nearestHit(event);
+    if (!hit?.object || channels.length <= 1) return channels[0];
+    const local = hit.object.worldToLocal(hit.point.clone());
+    const rowHeight = 0.18;
+    const top = ((channels.length - 1) * rowHeight) / 2;
+    const index = Math.max(0, Math.min(channels.length - 1, Math.round((top - local.y) / rowHeight)));
+    return channels[index];
+  };
+
+  const sendWidgetInput = (node, event, channelName = null) => {
+    const id = widgetId(node);
+    const channel = channelName || widgetChannelForEvent(node, event)?.channel || "value";
+    if (id) {
+      dispatch(Msg.WidgetInput(id, channel, widgetInputValue(node, event)));
+    }
+  };
+
   renderer.domElement.addEventListener("pointerdown", (event) => {
-    controls.dragging = true;
-    controls.moved = false;
-    controls.mode = event.button === 1 || event.button === 2 || event.shiftKey ? "pan" : "rotate";
-    controls.lastX = event.clientX;
-    controls.lastY = event.clientY;
-    renderer.domElement.setPointerCapture(event.pointerId);
-  });
-
-  renderer.domElement.addEventListener("pointermove", (event) => {
-    if (!controls.dragging) return;
-    const dx = event.clientX - controls.lastX;
-    const dy = event.clientY - controls.lastY;
-    controls.lastX = event.clientX;
-    controls.lastY = event.clientY;
-    if (Math.abs(dx) + Math.abs(dy) > 2) {
-      controls.moved = true;
-      controls.userAdjusted = true;
+    const mesh = nearestHit(event)?.object;
+    const node = lastModel?.graph?.nodes?.find((node) => node.id === mesh?.userData?.nodeId);
+    const cameraGesture = event.button === 1 || event.button === 2 || event.shiftKey;
+    if (isWidget(node) && !cameraGesture) {
+      event.preventDefault();
+      const channel = widgetChannelForEvent(node, event)?.channel || "value";
+      interaction.moved = true;
+      interaction.widgetDrag = node.id;
+      interaction.widgetChannel = channel;
+      interaction.pointerId = event.pointerId;
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture?.(event.pointerId);
+      dispatch(Msg.SelectNode(node.id));
+      sendWidgetInput(node, event, channel);
     }
-
-    if (controls.mode === "pan") {
-      const forward = new THREE.Vector3();
-      camera.getWorldDirection(forward);
-      const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
-      const up = new THREE.Vector3().crossVectors(right, forward).normalize();
-      const scale = controls.radius * 0.0018;
-      controls.target.addScaledVector(right, -dx * scale);
-      controls.target.addScaledVector(up, dy * scale);
-    } else {
-      controls.theta -= dx * 0.006;
-      controls.phi = Math.max(0.18, Math.min(Math.PI - 0.18, controls.phi + dy * 0.006));
-    }
-    updateCamera();
   });
 
-  renderer.domElement.addEventListener("pointerup", (event) => {
-    controls.dragging = false;
-    renderer.domElement.releasePointerCapture(event.pointerId);
-  });
-
-  renderer.domElement.addEventListener("wheel", (event) => {
+  const movePointerDrag = (event) => {
+    if (!interaction.widgetDrag) return;
+    if (interaction.pointerId !== null && event.pointerId !== interaction.pointerId) return;
     event.preventDefault();
-    controls.userAdjusted = true;
-    controls.radius = Math.max(1.4, Math.min(60, controls.radius * Math.exp(event.deltaY * 0.001)));
-    updateCamera();
-  }, { passive: false });
+    const node = lastModel?.graph?.nodes?.find((node) => node.id === interaction.widgetDrag);
+    sendWidgetInput(node, event, interaction.widgetChannel);
+  };
+
+  const stopPointerDrag = (event) => {
+    if (interaction.pointerId !== null && event.pointerId !== interaction.pointerId) return;
+    interaction.widgetDrag = null;
+    interaction.widgetChannel = null;
+    interaction.pointerId = null;
+    controls.enabled = true;
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  renderer.domElement.addEventListener("pointermove", movePointerDrag);
+  window.addEventListener("pointermove", movePointerDrag);
+  window.addEventListener("pointerup", stopPointerDrag);
+  window.addEventListener("pointercancel", stopPointerDrag);
+
+  controls.addEventListener("start", () => {
+    interaction.moved = false;
+  });
+  controls.addEventListener("change", () => {
+    interaction.moved = true;
+    interaction.userAdjusted = true;
+    updateLight();
+  });
 
   const graphKey = (model) =>
     `${model.graph.nodes.map((node) => node.id).sort().join("|")}::${model.graph.edges.length}`;
 
   const frameGraph = (model) => {
     const key = graphKey(model);
-    if (controls.userAdjusted || controls.framedGraphKey === key || model.graph.nodes.length === 0) {
+    if (interaction.userAdjusted || interaction.framedGraphKey === key || model.graph.nodes.length === 0) {
       return;
     }
     const points = model.graph.nodes
@@ -183,42 +248,69 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     const radius = Math.max(size.length() * 1.05, 4.5);
 
     controls.target.copy(center);
-    controls.radius = Math.min(60, Math.max(3.8, radius));
-    controls.theta = 0.42;
-    controls.phi = 1.18;
-    controls.framedGraphKey = key;
-    updateCamera();
-  };
-
-  const nearestMeshId = (event) => {
-    const rect = renderer.domElement.getBoundingClientRect();
-    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
-    raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObjects([...nodeMeshes.values()], false);
-    return hits[0]?.object?.userData?.nodeId || null;
+    camera.position.set(center.x + radius * 0.42,
+                        center.y + radius * 0.32,
+                        center.z + radius);
+    interaction.framedGraphKey = key;
+    controls.update();
+    updateLight();
   };
 
   renderer.domElement.addEventListener("click", (event) => {
-    if (controls.moved) return;
-    const id = nearestMeshId(event);
+    if (interaction.moved) return;
+    const id = nearestHit(event)?.object?.userData?.nodeId || null;
     if (id) dispatch(Msg.SelectNode(id));
   });
 
   const ensureNode = (node) => {
     if (nodeMeshes.has(node.id)) return nodeMeshes.get(node.id);
-    const geometry = isPropagator(node)
+    const geometry = isWidget(node)
+      ? new THREE.BoxGeometry(0.95, 0.32, 0.08)
+      : isPropagator(node)
       ? new THREE.ConeGeometry(0.22, 0.38, 3)
       : new THREE.SphereGeometry(0.15, 24, 24);
     const mesh = new THREE.Mesh(
       geometry,
-      makeMaterial()
+      isWidget(node)
+        ? new THREE.MeshBasicMaterial({ color: 0x050505 })
+        : makeMaterial()
     );
     mesh.userData.nodeId = node.id;
-    mesh.userData.kind = isPropagator(node) ? "propagator" : "cell";
+    mesh.userData.kind = isWidget(node) ? "widget" : isPropagator(node) ? "propagator" : "cell";
     const label = makeLabel(nodeLabel(node));
-    label.position.set(0, isPropagator(node) ? 0.38 : 0.32, 0);
-    if (!isPropagator(node)) {
+    label.position.set(0, isPropagator(node) ? 0.38 : 0.42, 0);
+    if (isWidget(node)) {
+      const outline = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geometry),
+        new THREE.LineBasicMaterial({ color: 0xffffff })
+      );
+      mesh.add(outline);
+      const channels = widgetChannels(node);
+      const rowHeight = 0.18;
+      const top = ((channels.length - 1) * rowHeight) / 2;
+      channels.forEach((channel, index) => {
+        const y = top - index * rowHeight;
+        const track = new THREE.Mesh(
+          new THREE.BoxGeometry(0.74, 0.018, 0.018),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        track.name = `slider-track-${index}`;
+        track.position.set(0, y, 0.075);
+        const knob = new THREE.Mesh(
+          new THREE.SphereGeometry(0.055, 18, 18),
+          new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        knob.name = `slider-knob-${index}`;
+        knob.position.set(-0.37, y, 0.13);
+        const channelLabel = makeLabel(String(channel.channel || "value"));
+        channelLabel.name = `slider-label-${index}`;
+        channelLabel.position.set(-0.52, y - 0.01, 0.13);
+        channelLabel.scale.setScalar(0.62);
+        mesh.add(track);
+        mesh.add(knob);
+        mesh.add(channelLabel);
+      });
+    } else if (!isPropagator(node)) {
       const halo = makeHalo();
       halo.name = "pulse-halo";
       mesh.add(halo);
@@ -272,6 +364,7 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
   };
 
   const render = (model) => {
+    lastModel = model;
     prune(model);
     frameGraph(model);
     for (const node of model.graph.nodes) {
@@ -282,9 +375,13 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
       const pulse = Math.min(1, Math.max(0, (model.pulses?.[node.id] || 0) / 0.9));
       const bloom = pulse * pulse;
       mesh.scale.setScalar((selected ? 1.38 : 1) + bloom * 0.72);
-      mesh.material.color.set(0xffffff);
-      mesh.material.emissive.set(0xffffff);
-      mesh.material.emissiveIntensity = (selected ? 1.35 : 0.72) + bloom * 1.6;
+      if (mesh.userData.kind === "widget") {
+        mesh.material.color.set(0x050505);
+      } else {
+        mesh.material.color.set(0xffffff);
+        mesh.material.emissive.set(0xffffff);
+        mesh.material.emissiveIntensity = (selected ? 1.35 : 0.72) + bloom * 1.6;
+      }
       const halo = mesh.getObjectByName("pulse-halo");
       if (halo) {
         halo.visible = bloom > 0.01;
@@ -294,6 +391,12 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
       if (mesh.userData.kind === "propagator") {
         mesh.rotation.y += 0.012;
       }
+      widgetChannels(node).forEach((_, index) => {
+        const knob = mesh.getObjectByName(`slider-knob-${index}`);
+        if (knob) {
+          knob.position.x = -0.37 + (channelValueAt(node, index) / 100) * 0.74;
+        }
+      });
     }
 
     for (const edge of model.graph.edges) {
@@ -322,6 +425,8 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
       ? JSON.stringify(selected, null, 2)
       : "no selection";
 
+    controls.update();
+    updateLight();
     renderer.render(scene, camera);
   };
 
@@ -352,6 +457,12 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     camera,
     render,
     detectPinch,
-    dispose: () => window.removeEventListener("resize", resize),
+    dispose: () => {
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("pointermove", movePointerDrag);
+      window.removeEventListener("pointerup", stopPointerDrag);
+      window.removeEventListener("pointercancel", stopPointerDrag);
+      controls.dispose();
+    },
   };
 };
