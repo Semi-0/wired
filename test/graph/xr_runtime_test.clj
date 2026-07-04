@@ -824,6 +824,44 @@
                   (map :channel)
                   set))))))
 
+(deftest io-xr-relaunches-on-widget-update-after-be-block-rebuild
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(define-behaviors a b c)"
+                    "(def out)"
+                    "(<-> (- (+ a b) c) out)"
+                    "(let-cell [g]
+                       (trace out g)
+                       (io:xr g))"
+                    "(io:slider-panel a b c)"
+                    "(-> out (be:block 7))"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (doseq [[channel value] [["a" 76] ["b" 4] ["c" 3]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> a (be:block 9))"})
+    (let [before-count (count (:effects (:result
+                                         (runtime/handle-command!
+                                          session
+                                          {:op :xr/effects}))))]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel "a"
+                                      :value 77})
+      (let [effects (:effects (:result
+                               (runtime/handle-command!
+                                session
+                                {:op :xr/effects})))
+            view (runtime/read-tui-view @session {:client-id "A"})]
+        (is (< before-count (count effects)))
+        (is (= 78 (get-in view [:blocks 7 :value])))
+        (is (= 77 (get-in view [:blocks 9 :value])))))))
+
 (deftest xr-io-supports-local-let-cell-receipt-target
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
