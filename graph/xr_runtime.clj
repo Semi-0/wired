@@ -149,7 +149,8 @@
                        "block" "block-at" "be:block" "be:block-at"
                        "instance" "translate" "list"
                        "slider-io" "slider-panel-io"
-                       "io:slider" "io:slider-panel"}
+                       "io:slider" "io:slider-panel"
+                       "io:slider-panel-name"}
                      label))
       "propagator"
 

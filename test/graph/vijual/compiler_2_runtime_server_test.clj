@@ -237,6 +237,36 @@
       (is (= 8 (get-in (runtime/read-tui-view @session {:client-id "A"})
                        [:blocks 5 :value]))))))
 
+(deftest tui-simplified-behavior-slider-panel-updates-be-block
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(define-behaviors a b c)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def out)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(io:slider-panel a b c)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(<-> (- (+ a b) c) out)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> out (be:block 6))"})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "a"
+                                    :value 10})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "b"
+                                    :value 4})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "c"
+                                    :value 3})
+    (is (= 11 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                      [:blocks 6 :value])))))
+
 (deftest block-target-rejects-non-empty-past-block
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})

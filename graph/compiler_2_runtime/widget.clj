@@ -69,6 +69,11 @@
   (when (= :symbol (ast/type form))
     (name (ast/name form))))
 
+(defn- ast-symbol
+  [form]
+  (when (= :symbol (ast/type form))
+    (ast/name form)))
+
 (defn- ast-literal-value
   [form]
   (when (= :literal (ast/type form))
@@ -146,56 +151,49 @@
                                        :widget/view-cell cell-id
                                        :widget/event-cell cell-id}])))}))
 
-(defn- ast-vector-value
-  [x]
-  (cond
-    (vector? x) x
-    (and (= :literal (ast/type x))
-         (vector? (ast/value x))) (ast/value x)
-    :else nil))
-
-(defn- ast-list-args
-  [x]
-  (when (and (= :apply (ast/type x))
-             (= :symbol (ast/type (ast/operator x)))
-             (= 'list (ast/name (ast/operator x))))
-    (ast/args x)))
-
-(defn- slider-panel-cell-forms
-  [x]
-  (or (ast-list-args x)
-      ;; Compatibility for the earlier spike. Public syntax should use
-      ;; `(list a b c)` so this does not pretend vectors are first-class cells.
-      (ast-vector-value x)))
+(defn- require-slider-panel-cells
+  [name cell-forms]
+  (when-not (seq cell-forms)
+    (throw (ex-info (str name " expects at least one cell")
+                    {:cell-forms cell-forms})))
+  cell-forms)
 
 (defn- io-slider-panel-plan
-  [operand-forms]
+  [operand-forms named?]
   (let [args (vec operand-forms)]
-    (case (count args)
-      1 (let [cells (first args)]
-          (when-not (slider-panel-cell-forms cells)
-            (throw (ex-info "io:slider-panel expects (list cell ...)"
-                            {:cells cells})))
-          {:panel-label "panel"
-           :cell-forms (slider-panel-cell-forms cells)})
-      2 (let [cells (second args)]
-          (when-not (slider-panel-cell-forms cells)
-            (throw (ex-info "io:slider-panel expects panel-id and (list cell ...)"
-                            {:cells cells})))
-          {:panel-label (or (some-> (ast-literal-value (first args)) str)
-                            (ast-symbol-name (first args))
-                            "panel")
-           :cell-forms (slider-panel-cell-forms cells)})
-      (throw (ex-info "io:slider-panel expects (list cell ...) or panel-id plus (list cell ...)"
-                      {:operand-forms operand-forms})))))
+    (if named?
+      (do
+        (when (< (count args) 2)
+          (throw (ex-info "io:slider-panel-name expects panel-id and cells"
+                          {:operand-forms operand-forms})))
+        {:panel-label (or (some-> (ast-literal-value (first args)) str)
+                          (ast-symbol-name (first args))
+                          "slider-panel-0")
+         :cell-forms (require-slider-panel-cells
+                      "io:slider-panel-name"
+                      (subvec args 1))})
+      {:panel-label "slider-panel-0"
+       :cell-forms (require-slider-panel-cells "io:slider-panel" args)})))
 
-(defn io-slider-panel-operator
-  [outbox-id]
+(defn- suffix-symbol
+  [sym suffix]
+  (symbol (namespace sym) (str (name sym) suffix)))
+
+(defn- event-source-id
+  [state cell-form fallback-id]
+  (or (when-let [sym (ast-symbol cell-form)]
+        (some-> (cenv/lookup (:env state) (suffix-symbol sym "-events"))
+                cenv/binding-id))
+      fallback-id))
+
+(defn- io-slider-panel-operator*
+  [outbox-id named?]
   (operator-value/operator-closure
-   {:name 'io:slider-panel
+   {:name (if named? 'io:slider-panel-name 'io:slider-panel)
     :direct-installer
     (fn [state operand-forms out-id]
-      (let [{:keys [panel-label cell-forms]} (io-slider-panel-plan operand-forms)
+      (let [{:keys [panel-label cell-forms]} (io-slider-panel-plan operand-forms
+                                                                    named?)
             [state' widget-binding] (add-literal-cell state
                                                       [:io-slider-panel panel-label :id]
                                                       panel-label)
@@ -216,7 +214,9 @@
                   (conj channels
                         {:widget/channel channel-name
                          :widget/view-cell cell-id
-                         :widget/event-cell cell-id})]))
+                         :widget/event-cell (event-source-id state'
+                                                             cell-form
+                                                             cell-id)})]))
              [state' []]
              (map-indexed vector cell-forms))]
         (install-widget-registration state''
@@ -226,6 +226,14 @@
                                      :slider-panel
                                      (cenv/binding-id widget-binding)
                                      channels)))}))
+
+(defn io-slider-panel-operator
+  [outbox-id]
+  (io-slider-panel-operator* outbox-id false))
+
+(defn io-slider-panel-name-operator
+  [outbox-id]
+  (io-slider-panel-operator* outbox-id true))
 
 (defn slider-io-operator
   [outbox-id]

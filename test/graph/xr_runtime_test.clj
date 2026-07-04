@@ -236,7 +236,7 @@
                          :source "(def a)
                                   (def b)
                                   (def c)
-                                  (io:slider-panel \"mix\" (list a b c))"})
+                                  (io:slider-panel-name \"mix\" a b c)"})
     (let [widget (get-in @session [:xr :widgets "mix"])]
       (is (= "slider-panel" (:type widget)))
       (is (= #{"a" "b" "c"} (set (keys (:channels widget)))))
@@ -246,17 +246,46 @@
           (is (= id (:view-cell channel)))
           (is (= id (:event-cell channel))))))))
 
-(deftest io-slider-panel-defaults-panel-id-with-list-syntax
+(deftest io-slider-panel-defaults-panel-id-with-varargs
   (let [session (runtime/new-session)]
     (xr/handle-command! session
                         {:op :xr/extend-graph
                          :source "(def a)
                                   (def b)
                                   (def c)
-                                  (io:slider-panel (list a b c))"})
-    (let [widget (get-in @session [:xr :widgets "panel"])]
+                                  (io:slider-panel a b c)"})
+    (let [widget (get-in @session [:xr :widgets "slider-panel-0"])]
       (is (= "slider-panel" (:type widget)))
       (is (= #{"a" "b" "c"} (set (keys (:channels widget))))))))
+
+(deftest io-slider-panel-routes-behavior-views-to-sibling-event-sources
+  (let [session (runtime/new-session)]
+    (xr/handle-command! session
+                        {:op :xr/extend-graph
+                         :source "(define-behaviors a b c)
+                                  (def out)
+                                  (io:slider-panel a b c)
+                                  (<-> (- (+ a b) c) out)"})
+    (let [widget (get-in @session [:xr :widgets "slider-panel-0"])]
+      (is (= "slider-panel" (:type widget)))
+      (doseq [label ["a" "b" "c"]]
+        (let [channel (get-in widget [:channels label])]
+          (is (= (cell-id session label) (:view-cell channel)))
+          (is (= (cell-id session (str label "-events"))
+                 (:event-cell channel))))))
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "slider-panel-0"
+                                 :channel "a"
+                                 :value 10})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "slider-panel-0"
+                                 :channel "b"
+                                 :value 4})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "slider-panel-0"
+                                 :channel "c"
+                                 :value 3})
+    (is (= 11 (behavior-current session "out")))))
 
 (deftest xr-widget-event-rejects-unknown-widget-without-mutating
   (let [session (runtime/new-session)]
@@ -358,20 +387,9 @@
                3)))))
 
 (def complex-widget-behavior-source
-  "(def a-events)
-   (def b-events)
-   (def c-events)
-   (def a)
-   (def b)
-   (def c)
+  "(define-behaviors a b c)
    (def out)
-   (def widget)
-   (def-net retain-event [acc update] [out]
-     (behavior-add-event acc update out))
-   (behavior a-events retain-event (behavior-empty-state) a)
-   (behavior b-events retain-event (behavior-empty-state) b)
-   (behavior c-events retain-event (behavior-empty-state) c)
-   (slider-panel-io \"mix\" \"a\" a a-events \"b\" b b-events \"c\" c c-events widget)
+   (io:slider-panel-name \"mix\" a b c)
    (<-> (- (+ a b) c) out)")
 
 (def user-route-widget-behavior-extension

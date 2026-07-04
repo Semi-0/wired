@@ -992,6 +992,9 @@
     (cenv/bind-at env 'io:slider-panel
                   (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
                   0)
+    (cenv/bind-at env 'io:slider-panel-name
+                  (runtime-widget/io-slider-panel-name-operator (boundary-outbox-id))
+                  0)
     (cenv/bind-at env 'translate (translate-operator) 0)
     (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
       (cenv/bind-at env 'block (block-target-operator (boundary-outbox-id)
@@ -1039,9 +1042,12 @@
 
 (defn- top-level-declaration? [source]
   (contains? '#{def def-cell def-cells def-net def-constraint
+                def-behavior def-behaviour def-behaviors def-behaviours
+                define-behaviors define-behaviours
                 <-> -> block block-at be:block be:block-at translate
                 xr-io io:xr
                 slider-io slider-panel-io io:slider io:slider-panel
+                io:slider-panel-name
                 behavior behavior-cell}
              (top-level-form-head source)))
 
