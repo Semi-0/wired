@@ -43,6 +43,11 @@
     (when-not (value/unusable? current)
       (behavior/base-value current))))
 
+(defn- projected-current
+  [node]
+  (or (get-in node [:value :current])
+      (get-in node [:value :value])))
+
 (def behavior-widget-source
   "(def events)
    (def out)
@@ -844,10 +849,14 @@
                                       :value value}))
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> a (be:block 9))"})
-    (let [before-count (count (:effects (:result
-                                         (runtime/handle-command!
-                                          session
-                                          {:op :xr/effects}))))]
+    (let [launch-effect? #(= [:xr :xr/launch-trace]
+                             [(:boundary/port %) (:boundary/kind %)])
+          before-effects (:effects (:result
+                                    (runtime/handle-command!
+                                     session
+                                     {:op :xr/effects})))
+          before-launches (filter launch-effect? before-effects)
+          before-epoch (apply max (map :boundary/epoch before-launches))]
       (runtime/commit-runtime-input! session
                                      {:runtime/input :xr/widget-event
                                       :widget-id "slider-panel-0"
@@ -857,8 +866,15 @@
                                (runtime/handle-command!
                                 session
                                 {:op :xr/effects})))
+            launches (filter launch-effect? effects)
+            after-epoch (apply max (map :boundary/epoch launches))
+            payload (#'xr-server/latest-effect-payload session)
+            out-node (projected-node-for-cell payload (cell-id session "out"))
+            a-node (projected-node-for-cell payload (cell-id session "a"))
             view (runtime/read-tui-view @session {:client-id "A"})]
-        (is (< before-count (count effects)))
+        (is (= before-epoch after-epoch))
+        (is (= "78" (projected-current out-node)))
+        (is (= "77" (projected-current a-node)))
         (is (= 78 (get-in view [:blocks 7 :value])))
         (is (= 77 (get-in view [:blocks 9 :value])))))))
 

@@ -6,6 +6,7 @@
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.xr-server :as xr-server]
+            [propagators.graph :as pgraph]
             [propagators.ids :as ids])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter
             PushbackReader]
@@ -28,7 +29,8 @@
 (defn- transport-value [value]
   (walk/postwalk
    (fn [x]
-     (if (ids/node-id? x)
+     (if (or (ids/node-id? x)
+             (pgraph/node? x))
        (pr-str x)
        x))
    value))

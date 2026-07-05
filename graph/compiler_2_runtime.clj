@@ -734,18 +734,44 @@
         (assoc-in [:nodes node-id] (or label "cell"))
         (update-in [:node-aliases cell-id] (fnil conj #{}) node-id))))
 
+(defn- graph-cell-value?
+  [v]
+  (cond
+    (value/unusable? v)
+    false
+
+    (semantic-trace/semantic-trace-graph? v)
+    false
+
+    (and (contains? (obj/public-slot-keys v) behavior/base-layer)
+         (contains? (obj/public-slot-keys v) behavior/summary-layer))
+    true
+
+    (behavior/behavior-value? v)
+    true
+
+    (net/network? v)
+    false
+
+    :else
+    true))
+
 (defn- assoc-graph-cell-value
   [state cell-id]
   (let [label (get (labels state) cell-id)
         graph0 (ensure-graph-cell-node (:graph state) label cell-id)
         node-id (graph-cell-node-id graph0 cell-id)
         strongest (net/network-cell-strongest (:program/net state) cell-id)
-        graph1 (if (value/unusable? strongest)
-                 (update graph0 :values dissoc node-id)
-                 (assoc-in graph0 [:values node-id] strongest))]
+        graph1 (if (graph-cell-value? strongest)
+                 (assoc-in graph0 [:values node-id] strongest)
+                 (update graph0 :values dissoc node-id))]
     (assoc state
            :graph graph1
            :program/graph graph1)))
+
+(defn- assoc-graph-cell-values
+  [state cell-ids]
+  (reduce assoc-graph-cell-value state cell-ids))
 
 (defn- program-strongest-snapshot
   [program-net]
@@ -785,7 +811,7 @@
                    (mapcat second)
                    distinct
                    vec)]
-    (assoc state
+    (assoc (assoc-graph-cell-values state cells)
            :runtime/changed-cells cells
            :runtime/changed-node-ids nodes)))
 
@@ -885,17 +911,33 @@
      (:boundary/receipt-id request)
      (:boundary/epoch request)]))
 
+(defn- prefer-latest-boundary-request?
+  [request]
+  (= [(:boundary/port request) (:boundary/kind request)]
+     [:xr :xr/launch-trace]))
+
+(defn- better-boundary-request
+  [old request]
+  (cond
+    (nil? old)
+    request
+
+    (prefer-latest-boundary-request? request)
+    request
+
+    (>= (graph-size old) (graph-size request))
+    old
+
+    :else
+    request))
+
 (defn- collapse-boundary-effects
   [requests]
   (->> requests
        (reduce (fn [acc request]
                  (update acc
                          (delivery-key request)
-                         (fn [old]
-                           (if (and old
-                                    (>= (graph-size old) (graph-size request)))
-                             old
-                             request))))
+                         #(better-boundary-request % request)))
                {})
        vals))
 
@@ -1637,9 +1679,30 @@
      :remaining-clients @remaining
      :unregistered true}))
 
+(defn- current-graph-values
+  [state]
+  (get-in state [:graph :values] {}))
+
+(defn- overlay-graph-values
+  [graph values]
+  (if (and graph (seq values))
+    (update graph :values merge values)
+    graph))
+
+(defn- project-xr-effect
+  [state request]
+  (if (= [(:boundary/port request) (:boundary/kind request)]
+         [:xr :xr/launch-trace])
+    (update-in request
+               [:boundary/payload :graph]
+               overlay-graph-values
+               (current-graph-values state))
+    request))
+
 (defn project-xr-effects
   [state]
-  {:effects (vec (get-in (require-state state) [:xr :effects] []))
+  {:effects (mapv #(project-xr-effect state %)
+                  (get-in (require-state state) [:xr :effects] []))
    :launched (vals (get-in state [:xr :launched] {}))
    :widgets (get-in state [:xr :widgets] {})
    :changed-cells (mapv pr-str (:runtime/changed-cells state))

@@ -22,19 +22,17 @@
   [request status]
   (boundary/xr-receipt request status))
 
-(defn- boundary-epoch
+(defn- program-epoch
   [network]
-  (let [dict (net/net-dict-or-empty network)]
-    (or (:runtime/commit-tick dict)
-        (:program/epoch dict)
-        0)))
+  (or (:program/epoch (net/net-dict-or-empty network))
+      0))
 
 (defn- p:xr-io-request
   [trace-id outbox-id receipt-id]
   (prop/construct-propagator
    (fn [_inputs _outputs network]
      (let [trace-graph (net/network-cell-strongest network trace-id)
-           epoch (boundary-epoch network)
+           epoch (program-epoch network)
            effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
        (if (or (value/unusable? trace-graph)
                (not (semantic-trace/semantic-trace-graph? trace-graph)))
@@ -71,7 +69,7 @@
        (let [[trace-id maybe-receipt-id] (vec arg-ids)
              receipt-id (or maybe-receipt-id out-id)
              trace-graph (net/network-cell-strongest current-net trace-id)
-             epoch (boundary-epoch current-net)
+             epoch (program-epoch current-net)
              effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
          (if (or (value/unusable? trace-graph)
                  (not (semantic-trace/semantic-trace-graph? trace-graph)))
@@ -81,8 +79,8 @@
                       {(effect-slot-key effect-id)
                        (xr-effect-request effect-id
                                           trace-graph
-                                           receipt-id
-                                           epoch)}))])))}))
+                                          receipt-id
+                                          epoch)}))])))}))
 
 (defn io-xr-operator [outbox-id]
   (with-meta
@@ -107,7 +105,7 @@
              receipt-id out-id
              trace-graph (when trace-id
                            (net/network-cell-strongest current-net trace-id))
-             epoch (boundary-epoch current-net)
+             epoch (program-epoch current-net)
              effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
          (when-not (and trace-id receipt-id (= 1 (count arg-ids)))
            (throw (ex-info "io:xr expects trace graph and returns receipt cell"
@@ -122,4 +120,3 @@
                                           trace-graph
                                           receipt-id
                                           epoch)}))])))}))
-
