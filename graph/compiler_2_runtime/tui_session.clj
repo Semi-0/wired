@@ -30,9 +30,9 @@
 (def install-instance-slots program/install-instance-slots)
 (def rebuild-program! input/rebuild-program!)
 (def install-block-incremental! input/install-block-incremental!)
+(def seed-appended-block-topology! input/seed-appended-block-topology!)
 
-(declare prepare-block-targets!
-         read-tui-view)
+(declare prepare-block-targets! read-tui-view)
 
 (defn validate-client-id!
   [client-id]
@@ -90,17 +90,14 @@
   (let [tui (tui! session client-id)
         index (:next-index tui)
         has-text? (contains? command :text)
-        block {:block-id (ids/new-node-id)
-               :index-id (ids/new-node-id)
-               :text-id (ids/new-node-id)
-               :display-id (ids/new-node-id)
-               :next-id (ids/new-node-id)
-               :index index
-               :epoch 0}
+        block {:block-id (ids/new-node-id), :index-id (ids/new-node-id),
+               :text-id (ids/new-node-id), :display-id (ids/new-node-id),
+               :next-id (ids/new-node-id), :index index, :epoch 0}
         block (cond-> block
                 has-text? (assoc :text-current text
                                  :text-current-source? true))
         state @session
+        previous-tail (peek (:blocks tui))
         n0 (-> (:network state)
                (nb/install-cell (:block-id block))
                (nb/install-cell (:index-id block) index index)
@@ -127,6 +124,9 @@
     (swap! session #(-> %
                         (assoc :network n3)
                         (assoc-in [:tuis client-id] tui')))
+    (seed-appended-block-topology! session client-id
+                                   (assoc block :client-id client-id)
+                                   previous-tail)
     (when has-text?
       (prepare-block-targets! session client-id index text)
       (swap! session assign-source-order client-id index))

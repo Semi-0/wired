@@ -224,15 +224,17 @@
         (close)))))
 
 (defn- profiled-step!
-  [port rows phase client-index item command]
+  [session port rows phase client-index item command]
   (let [started (System/nanoTime)
         response (request! port command)
         ms (/ (double (- (System/nanoTime) started)) 1000000.0)
-        row {:phase phase
-             :client (when client-index (client-id client-index))
-             :item item
-             :ms ms
-             :ok (:ok response)}]
+        profile (:runtime/last-incremental-profile @session)
+        row (cond-> {:phase phase
+                     :client (when client-index (client-id client-index))
+                     :item item
+                     :ms ms
+                     :ok (:ok response)}
+              (seq profile) (assoc :runtime-profile profile))]
     (swap! rows conj row)
     (when-not (:ok response)
       (throw (ex-info "benchmark request failed"
@@ -256,7 +258,7 @@
 (defn- multi-client-profile-bench
   [{:keys [clients blocks watchers slow-ms max-ms]
     :or {clients 4 blocks 10 watchers 10 slow-ms 5000 max-ms 60000}}]
-  (let [{:keys [port close]} (server/start-server 0)
+  (let [{:keys [port close session]} (server/start-server 0)
         rows (atom [])
         started (System/nanoTime)]
     (try
@@ -280,7 +282,13 @@
                    :slowest (slowest-rows rows* 10)
                    :completed-requests (count rows*)}))
               (step! [phase client-index item command]
-                (let [row (profiled-step! port rows phase client-index item command)]
+                (let [row (profiled-step! session
+                                          port
+                                          rows
+                                          phase
+                                          client-index
+                                          item
+                                          command)]
                   (when (stopped? row)
                     (throw (ex-info "profile stopped"
                                     {:reason (if (> (:ms row) slow-ms)

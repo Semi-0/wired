@@ -19,6 +19,8 @@
 (def settle-application-props program/settle-application-props)
 (def rebuild-program-state program-rebuild/rebuild-program-state)
 (def incremental-block-state program-rebuild/incremental-block-state)
+(def seed-appended-block-topology-state
+  program-rebuild/seed-appended-block-topology-state)
 (def read-source-forms program/read-source-forms)
 (def ensure-session-state! state/ensure-session-state!)
 (def mutate-session! state/mutate-session!)
@@ -188,6 +190,24 @@
            run-runtime-cycle
            (record-runtime-transaction before-net))))))
 
+(defn- elapsed-ms
+  [started]
+  (/ (double (- (System/nanoTime) started)) 1000000.0))
+
+(defn- timed-state
+  [state phase f]
+  (let [started (System/nanoTime)
+        state' (f state)]
+    (assoc-in state'
+              [:runtime/last-incremental-profile phase]
+              (elapsed-ms started))))
+
+(defn seed-appended-block-topology!
+  [session client-id block previous-tail]
+  (mutate-session!
+   session
+   #(seed-appended-block-topology-state % client-id block previous-tail)))
+
 (defn install-block-incremental!
   [session block]
   (mutate-session!
@@ -196,17 +216,20 @@
      (let [before-net (:program/net state)]
        (if-let [state' (incremental-block-state state block)]
          (-> state'
-             perform-boundary-effects
-             replay-runtime-inputs
-             run-runtime-cycle
-             (record-runtime-transaction before-net))
+             (timed-state :perform-boundary-effects perform-boundary-effects)
+             (timed-state :replay-runtime-inputs replay-runtime-inputs)
+             (timed-state :run-runtime-cycle run-runtime-cycle)
+             (timed-state :record-runtime-transaction
+                          #(record-runtime-transaction % before-net)))
          (-> state
              (update :runtime/full-rebuild-fallbacks (fnil inc 0))
-             rebuild-program-state
-             perform-boundary-effects
-             replay-runtime-inputs
-             run-runtime-cycle
-             (record-runtime-transaction before-net)))))))
+             (assoc :runtime/last-incremental-profile {})
+             (timed-state :fallback-rebuild rebuild-program-state)
+             (timed-state :perform-boundary-effects perform-boundary-effects)
+             (timed-state :replay-runtime-inputs replay-runtime-inputs)
+             (timed-state :run-runtime-cycle run-runtime-cycle)
+             (timed-state :record-runtime-transaction
+                          #(record-runtime-transaction % before-net))))))))
 
 (defn extend-source!
   "Append compiler source to the active runtime without replacing TUI state.

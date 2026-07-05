@@ -1,15 +1,18 @@
 (ns graph.compiler-2-runtime.program-rebuild
   "Transactional rebuild path for compiler-2 runtime source blocks."
   (:require [graph.compiler-2-runtime.program :as program]
+            [graph.compiler-2-runtime.program-topology :as topology]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.main :as compiler]
             [propagators.core :as core]
-            [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
             [propagators.semantic-trace :as semantic-trace]))
+
+(def seed-appended-block-topology-state
+  topology/seed-appended-block-topology-state)
 
 (defn- result-key
   [block]
@@ -103,68 +106,15 @@
           state
           source-blocks))
 
-(defn- seed-instance
-  [runtime-net [program-net props] {:keys [instance-id blocks-id]}]
-  (let [program-net (-> program-net
-                        (program/seed-program-block-cell runtime-net instance-id)
-                        (program/seed-program-block-cell runtime-net blocks-id))
-        [prop-id program-net] ((obj/p:slot :instance/blocks
-                                           blocks-id
-                                           instance-id)
-                               program-net)]
-    [program-net (conj props prop-id)]))
-
-(defn- seed-block
-  [runtime-net [program-net props] block]
-  (let [program-net (reduce #(program/seed-program-block-cell %1
-                                                              runtime-net
-                                                              %2)
-                            program-net
-                            [(:block-id block) (:index-id block)
-                             (:next-id block) (:text-id block)
-                             (:display-id block)])
-        [index-prop program-net] ((obj/p:slot :block/index
-                                              (:index-id block)
-                                              (:block-id block))
-                                  program-net)
-        program-net (if (:text-current-source? block)
-                      (nb/install-cell program-net
-                                       (:text-id block)
-                                       (:text-current block)
-                                       (:text-current block))
-                      program-net)
-        [text-prop program-net] ((obj/p:slot :block/text
-                                             (:text-id block)
-                                             (:block-id block))
-                                 program-net)
-        [display-prop program-net] ((obj/p:slot :block/display
-                                                (:display-id block)
-                                                (:block-id block))
-                                    program-net)
-        [next-prop program-net] ((obj/p:cdr (:next-id block)
-                                            (:block-id block))
-                                 program-net)]
-    [program-net (into props [index-prop text-prop display-prop next-prop])]))
-
-(defn- seed-program-topology
-  [state program-net]
-  (let [runtime-net (:network state)
-        [program-net props] (reduce (partial seed-instance runtime-net)
-                                    [program-net []]
-                                    (vals (:tuis state)))
-        [program-net props] (reduce (partial seed-block runtime-net)
-                                    [program-net props]
-                                    (program/all-blocks state))]
-    (nb/run-propagators program-net props)))
-
 (defn- base-rebuild-state
   [state epoch]
   (assoc state
          :program/net (nb/install-cell
                        (net/assoc-net-dict-entry
                         (nb/ensure-cell
-                         (seed-program-topology state
-                                                (program/runtime-base-net))
+                         (topology/seed-program-topology
+                          state
+                          (program/runtime-base-net))
                          (program/boundary-outbox-id))
                         :program/epoch
                         epoch)
@@ -232,6 +182,20 @@
                              (:program/net state)
                              [])))
 
+(defn- elapsed-ms
+  [started]
+  (/ (double (- (System/nanoTime) started)) 1000000.0))
+
+(defn- put-profile
+  [state phase ms]
+  (assoc-in state [:runtime/last-incremental-profile phase] ms))
+
+(defn- timed-state
+  [state phase f]
+  (let [started (System/nanoTime)
+        state' (f state)]
+    (put-profile state' phase (elapsed-ms started))))
+
 (defn- project-results
   [state source-blocks]
   (reduce (fn [s block]
@@ -265,6 +229,60 @@
       (project-results s source-blocks)
       (assoc s :compiled-network (:program/net s)))))
 
+(defn- be-block-watch-source?
+  [source]
+  (try
+    (let [forms (program/read-source-forms source)]
+      (boolean
+       (some (fn [form]
+               (and (seq? form)
+                    (= '-> (first form))
+                    (seq? (nth form 2 nil))
+                    (#{'be:block 'be:block-at}
+                     (first (nth form 2)))))
+             forms)))
+    (catch Throwable _
+      false)))
+
+(defn- compile-effect-only-form
+  [state block epoch source]
+  (try
+    (let [source (program/normalize-trace-source source)
+          graph-id (program/runtime-graph-id)
+          env (program/runtime-env state
+                                   (:program/env state)
+                                   graph-id
+                                   (:client-id block))
+          program-net-input (-> (:program/net state)
+                                (nb/ensure-cell (program/boundary-outbox-id))
+                                (nb/install-cell graph-id
+                                                 (:graph state)
+                                                 (:graph state)))
+          compiled (compiler/compile-source
+                    source
+                    env
+                    {:net program-net-input
+                     :seed [:runtime/block (:order block) (:epoch block)]
+                     :reuse-existing-bindings? true})
+          program-net (nb/run-propagators (:net compiled) (:props compiled))]
+      (-> state
+          (assoc :program/net program-net
+                 :program/env (:env compiled)
+                 :compiled compiled
+                 :compiled-network program-net
+                 :source source)
+          (assoc-in [:program/results (result-key block)]
+                    {:compiled compiled
+                     :source source
+                     :block block
+                     :result (program/compiled-result-value compiled
+                                                            program-net)})))
+    (catch Throwable t
+      (assoc-in state
+                [:program/results (result-key block)]
+                {:error (ex-message t)
+                 :data (ex-data t)}))))
+
 (defn incremental-block-state
   [state block]
   (let [source (program/block-text state block)]
@@ -274,23 +292,29 @@
                (not (program/trace-source? source)))
       (let [epoch (inc (or (:program/epoch state) 0))
             state (assoc state
-                         :program/net
-                         (net/assoc-net-dict-entry
-                          (nb/ensure-cell
-                           (seed-program-topology state (:program/net state))
-                           (program/boundary-outbox-id))
-                          :program/epoch
-                          epoch))
-            compiled (program/compile-program-form
+                         :program/net (net/assoc-net-dict-entry
+                                       (nb/ensure-cell
+                                        (:program/net state)
+                                        (program/boundary-outbox-id))
+                                       :program/epoch
+                                       epoch)
+                         :runtime/last-incremental-profile {})
+            block (assoc block :epoch (:epoch block))
+            compiled (timed-state
                       (assoc state :program/epoch epoch)
-                      (assoc block :epoch (:epoch block))
-                      epoch
-                      source)
+                      :compile
+                      #(if (be-block-watch-source? source)
+                         (compile-effect-only-form % block epoch source)
+                         (program/compile-program-form % block epoch source)))
             entry (compiled-entry compiled block)]
         (when-not (:error entry)
-          (let [settled (-> compiled
-                            (publish-graph (:graph compiled))
-                            settle-state)]
+          (let [settled (if (be-block-watch-source? source)
+                          compiled
+                          (-> compiled
+                              (timed-state :publish-graph
+                                           #(publish-graph %
+                                                           (:graph compiled)))
+                              (timed-state :settle settle-state)))]
             (assoc settled
                    :compiled-network (:program/net settled)
                    :runtime/incremental-installs
