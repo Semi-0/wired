@@ -18,6 +18,13 @@
 
 (def default-xr-client-id "xr")
 
+(defonce installed-traces
+  (atom {}))
+
+(defn- session-trace-key
+  [session trace-id]
+  [session trace-id])
+
 (defn- node-id-string
   [x]
   (pr-str x))
@@ -173,6 +180,10 @@
                (pr-str id)])
             node-ids)))
 
+(defn- edge-pair?
+  [edge]
+  (and (vector? edge) (= 2 (count edge))))
+
 (defn- label-rank
   [label]
   (cond
@@ -224,7 +235,7 @@
                                    to* (canonical to)]
                                (when (not= from* to*)
                                  [from* to*])))
-                           edges)))
+                           (filter edge-pair? edges))))
         node-aliases* (reduce (fn [m [cell-id alias-nodes]]
                                 (update m (canonical-node nodes*
                                                           values*
@@ -317,15 +328,24 @@
   (let [trace-id (str (random-uuid))
         request (trace-request command)
         graph (runtime/semantic-trace @session request)]
-    (swap! session assoc-in [:xr :traces trace-id] request)
+    (swap! installed-traces assoc (session-trace-key session trace-id) request)
+    (swap! session #(-> %
+                        (assoc-in [:xr/traces trace-id] request)
+                        (assoc-in [:xr :traces trace-id] request)))
     {:trace-id trace-id
      :interval-ms (:interval-ms request)
      :request request
      :graph (graph->json graph (graph-projection-options @session))}))
 
 (defn xr-trace-read
-  [state {:keys [trace-id]}]
-  (let [request (get-in state [:xr :traces trace-id])]
+  [state-or-session {:keys [trace-id]}]
+  (let [session? (instance? clojure.lang.IAtom state-or-session)
+        state (if session? @state-or-session state-or-session)
+        request (or (get-in state [:xr/traces trace-id])
+                    (get-in state [:xr :traces trace-id])
+                    (when session?
+                      (get @installed-traces
+                           (session-trace-key state-or-session trace-id))))]
     (when-not request
       (throw (ex-info "xr trace not found" {:trace-id trace-id})))
     {:trace-id trace-id
@@ -412,7 +432,7 @@
   [session {:keys [op] :as command}]
   (case op
     :xr/trace/install (xr-trace-install! session command)
-    :xr/trace/read (xr-trace-read @session command)
+    :xr/trace/read (xr-trace-read session command)
     :xr/trace/expand (xr-trace-expand @session command)
     :xr/extend-graph (xr-extend-graph! session command)
     :xr/send-message (xr-send-message! session command)

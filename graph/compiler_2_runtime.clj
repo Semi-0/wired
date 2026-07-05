@@ -7,6 +7,7 @@
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.trace-session :as trace-session]
+            [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
             [graph.compiler-2-runtime.xr-projection :as xr-projection]))
 
@@ -24,10 +25,30 @@
 (def install-semantic-trace! trace-session/install-semantic-trace!)
 (def read-installed-trace trace-session/read-installed-trace)
 (def stop-installed-trace! trace-session/stop-installed-trace!)
+(def schedule-trace-refreshes! trace-subscriptions/schedule-refreshes!)
+(def refresh-trace-subscriptions! trace-subscriptions/refresh-now!)
 (def register-tui! tui-session/register-tui!)
-(def append-tui-block! tui-session/append-tui-block!)
-(def edit-tui-block! tui-session/edit-tui-block!)
-(def submit-tui-block! tui-session/submit-tui-block!)
+
+(defn- with-trace-refresh!
+  [session result]
+  (refresh-trace-subscriptions! session)
+  result)
+
+(defn append-tui-block!
+  [session command]
+  (with-trace-refresh! session
+    (tui-session/append-tui-block! session command)))
+
+(defn edit-tui-block!
+  [session command]
+  (with-trace-refresh! session
+    (tui-session/edit-tui-block! session command)))
+
+(defn submit-tui-block!
+  [session command]
+  (with-trace-refresh! session
+    (tui-session/submit-tui-block! session command)))
+
 (def project-tui-view tui-session/project-tui-view)
 (def read-tui-view tui-session/read-tui-view)
 (def read-agent-blocks tui-session/read-agent-blocks)

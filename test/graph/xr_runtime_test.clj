@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is]]
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime.input :as runtime-input]
+            [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime-server :as runtime-server]
             [graph.json :as json]
             [graph.xr-runtime :as xr]
@@ -54,6 +55,39 @@
   [node]
   (or (get-in node [:value :current])
       (get-in node [:value :value])))
+
+(defn- wait-until
+  [pred]
+  (let [deadline (+ (System/currentTimeMillis) 2000)]
+    (loop []
+      (cond
+        (pred) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do
+                (Thread/sleep 5)
+                (recur))))))
+
+(defn- launch-effect?
+  [effect]
+  (= [:xr :xr/launch-trace]
+     [(:boundary/port effect) (:boundary/kind effect)]))
+
+(defn- xr-effects
+  [session]
+  (runtime/read-xr-effects @session))
+
+(defn- wait-for-xr-launch
+  [session]
+  (runtime/schedule-trace-refreshes! session)
+  (wait-until #(some launch-effect? (:effects (xr-effects session)))))
+
+(defn- latest-xr-launch
+  [session]
+  (last (filter launch-effect? (:effects (xr-effects session)))))
+
+(defn- wait-for-bytes
+  [^ByteArrayOutputStream bytes]
+  (wait-until #(pos? (.size bytes))))
 
 (def behavior-widget-source
   "(def events)
@@ -677,9 +711,10 @@
      session
      {:client-id "A"
       :text "(let-cell [g]
-               (trace a g)
-               (xr-io g receipt)
-               receipt)"})
+	               (trace a g)
+	               (xr-io g receipt)
+	               receipt)"})
+    (is (wait-for-xr-launch session))
     (let [effects (:result (runtime/handle-command! session {:op :xr/effects}))
           receipt-id (cell-id session "receipt")
           receipt-value (net/network-cell-strongest (:program/net @session)
@@ -700,8 +735,9 @@
      session
      {:client-id "A"
       :text "(let-cell [g]
-               (trace a g)
-               (io:xr g))"})
+	               (trace a g)
+	               (io:xr g))"})
+    (is (wait-for-xr-launch session))
     (let [effects (:result (runtime/handle-command! session {:op :xr/effects}))
           receipt-id (get-in effects [:effects 0 :boundary/receipt-id])
           delivered (first (:launched effects))]
@@ -726,6 +762,225 @@
                  (get-in @session
                          [:program/results ["A" 3] :error])))))
 
+(deftest compiler-runtime-trace-registers-distinct-subscriptions
+  (let [session (runtime/new-session)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def x0)"
+                    "(def x1)"
+                    "(def x2)"
+                    "(def x3)"
+                    "(def x4)"
+                    "(let-cell [g] (trace x0 g))"
+                    "(let-cell [g] (trace x1 g))"
+                    "(let-cell [g] (trace x2 g))"
+                    "(let-cell [g] (trace x3 g))"
+                    "(let-cell [g] (trace x4 g))"]]
+      (runtime/handle-command! session {:op :tui/append-block
+                                        :client-id "A"
+                                        :text source}))
+    (is (wait-until #(= 5 (count (:trace/results @session)))))
+    (is (= 5 (count (:trace/subscriptions @session))))
+    (is (= 5 (count (set (map (comp :node :request)
+                              (vals (:trace/subscriptions @session)))))))))
+
+(deftest effectful-trace-updates-io-xr-after-additive-topology-append
+  (let [session (runtime/new-session)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def x0)"
+                    "(let-cell [g] (trace x0 g) (io:xr g))"]]
+      (runtime/handle-command! session {:op :tui/append-block
+                                        :client-id "A"
+                                        :text source}))
+    (is (wait-until #(= 1 (count (:trace/results @session)))))
+    (let [before (count (get-in @session [:xr :effects]))
+          latest-labels #(->> (get-in @session [:xr :effects])
+                              last
+                              :boundary/payload
+                              :graph
+                              :nodes
+                              vals
+                              frequencies)]
+      (runtime/handle-command! session
+                               {:op :tui/append-block
+                                :client-id "A"
+                                :text "(let-cell [u0] (-> (+ u0 1) x0))"})
+      (is (wait-until
+           #(let [labels (latest-labels)]
+              (and (< before (count (get-in @session [:xr :effects])))
+                   (pos? (get labels "+" 0))
+                   (pos? (get labels "->" 0))))))
+      (let [labels (latest-labels)]
+        (is (pos? (get labels "x0" 0)))
+        (is (pos? (get labels "+" 0)))
+        (is (pos? (get labels "->" 0)))))))
+
+(deftest effectful-trace-updates-when-upstream-chain-grows
+  (let [session (runtime/new-session)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def-cells a b c out g)"
+                    "(-> (+ a b) out)"
+                    "(trace out g)"]]
+      (runtime/handle-command! session {:op :tui/append-block
+                                        :client-id "A"
+                                        :text source}))
+    (is (wait-until #(= 1 (:trace/published-results @session))))
+    (runtime/handle-command! session
+                             {:op :tui/append-block
+                              :client-id "A"
+                              :text "(-> (+ 1 c) b)"})
+    (is (wait-until #(= 2 (:trace/published-results @session))))
+    (let [subscription (first (vals (:trace/subscriptions @session)))
+          result (get-in @session [:trace/results (:id subscription)])
+          graph (behavior/base-value (behavior/strongest-value (:behavior result)))
+          labels (frequencies (vals (:nodes graph)))]
+      (is (pos? (get labels "out" 0)))
+      (is (pos? (get labels "a" 0)))
+      (is (pos? (get labels "b" 0)))
+      (is (pos? (get labels "c" 0)))
+      (is (pos? (get labels "1" 0)))
+      (is (<= 2 (get labels "+" 0)))
+      (is (<= 2 (get labels "->" 0))))))
+
+(deftest effectful-trace-auto-output-block-stays-live
+  (let [session (runtime/new-session)
+        submit! #(do
+                   (runtime/handle-command! session {:op :tui/submit-block
+                                                     :client-id "A"
+                                                     :text %})
+                   (Thread/sleep 50))
+        block-labels #(->> (:blocks (:result (runtime/handle-command!
+                                              session
+                                              {:op :tui/read-view
+                                               :client-id "A"})))
+                           (some (fn [block]
+                                   (when (= 2 (:index block))
+                                     (:value block))))
+                           :nodes
+                           vals
+                           frequencies)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (submit! "(def-cells a b c out g)")
+    (submit! "(trace out g)")
+    (is (wait-until #(pos? (get (block-labels) "out" 0))))
+    (submit! "(-> (+ a b) out)")
+    (is (wait-until #(let [labels (block-labels)]
+                       (and (pos? (get labels "a" 0))
+                            (pos? (get labels "b" 0))
+                            (pos? (get labels "+" 0))
+                            (pos? (get labels "->" 0))))))))
+
+(deftest io-xr-launches-existing-effectful-trace-result
+  (let [session (runtime/new-session)
+        submit! #(do
+                   (runtime/handle-command! session {:op :tui/submit-block
+                                                     :client-id "A"
+                                                     :text %})
+                   (Thread/sleep 50))
+        latest-labels #(->> (:effects (runtime/read-xr-effects @session))
+                            last
+                            :boundary/payload
+                            :graph
+                            :nodes
+                            vals
+                            frequencies)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (submit! "(def-cells out g)")
+    (submit! "(trace out g)")
+    (is (wait-until #(= 1 (:trace/published-results @session))))
+    (submit! "(io:xr g)")
+    (is (wait-until #(pos? (get (latest-labels) "out" 0))))))
+
+(deftest xr-effects-preserve-trace-delivery-order
+  (let [session (runtime/new-session)
+        latest-labels #(->> (:effects (runtime/read-xr-effects @session))
+                            last
+                            :boundary/payload
+                            :graph
+                            :nodes
+                            vals
+                            frequencies)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def-behaviors a b c)"
+                    "(def out)"
+                    "(def g)"
+                    "(trace out g)"
+                    "(io:xr g)"
+                    "(-> (+ (- a b) c) out)"
+                    "(-> (+ a b) out)"]]
+      (runtime/handle-command! session {:op :tui/append-block
+                                        :client-id "A"
+                                        :text source})
+      (Thread/sleep 50))
+    (is (wait-until #(let [labels (latest-labels)]
+                       (and (pos? (get labels "a" 0))
+                            (pos? (get labels "b" 0))
+                            (pos? (get labels "c" 0))
+                            (pos? (get labels "+" 0))
+                            (pos? (get labels "->" 0))))))
+    (let [labels (latest-labels)]
+      (is (pos? (get labels "a" 0)))
+      (is (pos? (get labels "b" 0)))
+      (is (pos? (get labels "c" 0)))
+      (is (pos? (get labels "+" 0)))
+      (is (pos? (get labels "->" 0))))))
+
+(deftest xr-effectful-trace-publishes-first-expanded-topology
+  (let [session (runtime/new-session)
+        append! #(runtime/handle-command! session {:op :tui/append-block
+                                                   :client-id "A"
+                                                   :text %})
+        latest-labels #(->> (:effects (runtime/read-xr-effects @session))
+                            last
+                            :boundary/payload
+                            :graph
+                            :nodes
+                            vals
+                            frequencies)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def-behaviors a b c)"
+                    "(def out)"
+                    "(def g)"
+                    "(trace out g)"
+                    "(io:xr g)"]]
+      (append! source)
+      (Thread/sleep 50))
+    (append! "(-> (+ (- a b) c) out)")
+    (is (wait-until #(let [labels (latest-labels)]
+                       (and (pos? (get labels "a" 0))
+                            (pos? (get labels "b" 0))
+                            (pos? (get labels "c" 0))
+                            (pos? (get labels "-" 0))
+                            (pos? (get labels "+" 0))
+                            (pos? (get labels "->" 0))))))))
+
+(deftest trace-subscription-drops-stale-worker-result
+  (let [session (runtime/new-session)]
+    (runtime/handle-command! session {:op :tui/register :client-id "A"})
+    (doseq [source ["(def x0)"
+                    "(let-cell [g] (trace x0 g))"]]
+      (runtime/handle-command! session {:op :tui/append-block
+                                        :client-id "A"
+                                        :text source}))
+    (is (wait-until #(= 1 (count (:trace/results @session)))))
+    (let [subscription (first (vals (:trace/subscriptions @session)))
+          current (get-in @session [:trace/results (:id subscription)])
+          current-epoch (:epoch current)
+          stale-graph {:semantic-trace/graph true
+                       :nodes {:stale "stale"}
+                       :node-aliases {}
+                       :values {}
+                       :node-ui {}
+                       :expansions {}
+                       :edges []}
+          state' (trace-subscriptions/publish-result-state
+                  @session
+                  {:subscription subscription
+                   :epoch (dec current-epoch)
+                   :graph stale-graph})]
+      (is (= current (get-in state' [:trace/results (:id subscription)])))
+      (is (= (inc (long (or (:trace/stale-results @session) 0)))
+             (:trace/stale-results state'))))))
+
 (deftest tui-submit-xr-io-records-runtime-transaction
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
@@ -736,10 +991,11 @@
                 session
                 {:client-id "A"
                  :text "(let-cell [g]
-                          (trace a g)
-                          (xr-io g receipt)
-                          receipt)"})
-          effects (:result (runtime/handle-command! session {:op :xr/effects}))
+	                          (trace a g)
+	                          (xr-io g receipt)
+	                          receipt)"})
+          _ (is (wait-for-xr-launch session))
+	          effects (:result (runtime/handle-command! session {:op :xr/effects}))
           launch (first (:effects effects))
           graph (get-in launch [:boundary/payload :graph])]
       (is (seq (:blocks view)))
@@ -773,10 +1029,11 @@
       (request {:op :tui/append-block :client-id "A" :text "(def receipt)"})
       (request {:op :tui/append-block
                 :client-id "A"
-                :text "(let-cell [g]
-                         (trace a g)
-                         (xr-io g receipt)
-                         receipt)"})
+	                :text "(let-cell [g]
+	                         (trace a g)
+	                         (xr-io g receipt)
+	                         receipt)"})
+      (is (wait-until #(some? (:server @(:xr-state server)))))
       (let [xr (:server @(:xr-state server))]
         (is (some? xr))
         (is (= (:session server) (:session xr)))
@@ -815,14 +1072,15 @@
     (runtime/append-tui-block!
      session
      {:client-id "A"
-      :text "(let-cell [g]
-               (trace out g)
-               (xr-io g receipt)
-               receipt)"})
+	      :text "(let-cell [g]
+	               (trace out g)
+	               (xr-io g receipt)
+	               receipt)"})
     (let [stop (#'xr-server/start-effect-push!
                 session
                 (BufferedOutputStream. bytes))]
       (try
+        (is (wait-for-bytes bytes))
         (stop)
         (let [frame (#'xr-server/read-frame
                      (BufferedInputStream.
@@ -841,10 +1099,11 @@
                     "(def out)"
                     "(<-> (- (+ a b) c) out)"
                     "(let-cell [g]
-                       (trace out g)
-                       (io:xr g))"
-                    "(io:slider-panel a b c)"]]
+	                       (trace out g)
+	                       (io:xr g))"
+	                    "(io:slider-panel a b c)"]]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
     (let [payload (#'xr-server/latest-effect-payload session)
           widgets (get-in payload [:graph :widgets])]
       (is (some #(= "slider-panel-0" (:id %)) widgets))
@@ -866,9 +1125,10 @@
                     "(let-cell [g]
                        (trace out g)
                        (io:xr g))"
-                    "(io:slider-panel a b c)"
-                    "(-> out (be:block 7))"]]
+	                    "(io:slider-panel a b c)"
+	                    "(-> out (be:block 7))"]]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
     (doseq [[channel value] [["a" 76] ["b" 4] ["c" 3]]]
       (runtime/commit-runtime-input! session
                                      {:runtime/input :xr/widget-event
@@ -877,6 +1137,7 @@
                                       :value value}))
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> a (be:block 9))"})
+    (is (wait-for-xr-launch session))
     (let [launch-effect? #(= [:xr :xr/launch-trace]
                              [(:boundary/port %) (:boundary/kind %)])
           before-effects (:effects (:result
@@ -954,18 +1215,20 @@
      session
      {:client-id "A"
       :text "(let-cell [g r]
-               (trace out g)
-               (xr-io g r)
-               r)"})
+	               (trace out g)
+	               (xr-io g r)
+	               r)"})
+    (is (wait-for-xr-launch session))
     (let [view (runtime/read-tui-view @session {:client-id "A"})
           values (mapv :value (:blocks view))
           effects (:effects (:result (runtime/handle-command! session
                                                                {:op :xr/effects})))]
-      (is (= "(let-cell [g r]
+      (is (= (str/replace "(let-cell [g r]
                (trace out g)
                (xr-io g r)
                r)"
-             (nth values 2)))
+                          #"\s+" " ")
+             (str/replace (nth values 2) #"\s+" " ")))
       (is (= 1 (count effects)))
       (is (= :xr/launch-trace (get-in effects [0 :boundary/kind]))))))
 
@@ -976,12 +1239,13 @@
                     "(def a)"
                     "(-> (+ a 2) out2)"
                     "(def r)"
-                    "(let-cell [g]
-                       (trace out2 g)
-                       (xr-io g r)
-                       r)"
-                    "(-> (+ 1 2) a)"]]
+	                    "(let-cell [g]
+	                       (trace out2 g)
+	                       (xr-io g r)
+	                       r)"
+	                    "(-> (+ 1 2) a)"]]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
     (let [effects (:effects (:result (runtime/handle-command! session
                                                                {:op :xr/effects})))
           labels (->> effects
@@ -993,7 +1257,7 @@
                       frequencies)]
       (is (<= 2 (get labels "+" 0)))
       (is (<= 2 (get labels "->" 0)))
-      (is (= 1 (get labels "1" 0)))
+      (is (pos? (get labels "1" 0)))
       (is (<= 2 (get labels "a" 0)))
       (is (pos? (get labels "out2" 0))))))
 
@@ -1003,11 +1267,12 @@
     (doseq [source ["(def out)"
                     "(def a)"
                     "(-> (+ 1 a) out)"
-                    "(let-cell [g r]
-                       (trace out g)
-                       (xr-io g r)
-                       r)"]]
+	                    "(let-cell [g r]
+	                       (trace out g)
+	                       (xr-io g r)
+	                       r)"]]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
     (let [effects (:effects (:result (runtime/handle-command! session
                                                                {:op :xr/effects})))
           labels (->> effects

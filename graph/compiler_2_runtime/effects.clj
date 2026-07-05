@@ -85,6 +85,18 @@
                      request)
           (assoc :program/pending-after-effects tasks)))))
 
+(defn record-trace-subscription
+  [state boundary-request]
+  (let [{trace-request :request target-id :target-id}
+        (:boundary/payload boundary-request)
+        subscription-id (:boundary/id boundary-request)]
+    (assoc-in state
+              [:trace/subscriptions subscription-id]
+              {:id subscription-id
+               :request trace-request
+               :target-id target-id
+               :created-epoch (:boundary/epoch boundary-request)})))
+
 (defn record-tui-write
   [state request]
   (let [text-id (get-in request [:boundary/target :text-id])
@@ -160,20 +172,40 @@
   (= [(:boundary/port request) (:boundary/kind request)]
      [:xr :xr/launch-trace]))
 
+(defn richer-boundary-request
+  [old request]
+  (if (> (graph-score old) (graph-score request))
+    old
+    request))
+
+(defn usable-boundary-request
+  [old request]
+  (let [old-unusable? (value/unusable? (:boundary/payload old))
+        request-unusable? (value/unusable? (:boundary/payload request))]
+    (cond
+      (and old-unusable? (not request-unusable?)) request
+      (and request-unusable? (not old-unusable?)) old
+      :else nil)))
+
 (defn better-boundary-request
   [old request]
-  (cond
-    (nil? old)
-    request
+  (let [usable (when old
+                 (usable-boundary-request old request))]
+    (cond
+      (nil? old)
+      request
 
-    (prefer-latest-boundary-request? request)
-    request
+      usable
+      usable
 
-    (>= (graph-score old) (graph-score request))
-    old
+      (prefer-latest-boundary-request? request)
+      (richer-boundary-request old request)
 
-    :else
-    request))
+      (>= (graph-score old) (graph-score request))
+      old
+
+      :else
+      request)))
 
 (defn collapse-boundary-effects
   [requests]
@@ -190,6 +222,7 @@
   (reduce (fn [s request]
             (case [(:boundary/port request) (:boundary/kind request)]
               [:xr :xr/launch-trace] (record-xr-launch s request)
+              [:xr :xr/trace-subscribe] (record-trace-subscription s request)
               [:xr :xr/widget-register] (record-widget-register s request)
               [:tui :tui/write-block] (record-tui-write s request)
               [:tui :tui/write-display] (record-tui-display s request)

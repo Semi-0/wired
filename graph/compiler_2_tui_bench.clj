@@ -136,6 +136,100 @@
           (value-symbol client-index watcher-index)
           target-index))
 
+(defn- trace-cell-symbol
+  [i]
+  (str "x" i))
+
+(defn- trace-additive-source
+  [i]
+  (format "(let-cell [u%d] (-> (+ u%d %d) %s))"
+          i
+          i
+          i
+          (trace-cell-symbol (mod i 5))))
+
+(defn- trace-completions
+  [session]
+  (+ (long (or (:trace/published-results @session) 0))
+     (long (or (:trace/stale-results @session) 0))
+     (long (or (:trace/unchanged-results @session) 0))))
+
+(defn- wait-for-trace-completions!
+  [session target]
+  (let [started (System/nanoTime)
+        deadline (+ (System/currentTimeMillis) 5000)]
+    (loop []
+      (if (>= (trace-completions session) target)
+        (/ (double (- (System/nanoTime) started)) 1000000.0)
+        (if (> (System/currentTimeMillis) deadline)
+          (throw (ex-info "timed out waiting for trace subscriptions"
+                          {:target target
+                           :completed (trace-completions session)}))
+          (do
+            (Thread/sleep 1)
+            (recur)))))))
+
+(defn- xr-effect-read-ms
+  [session]
+  (elapsed-ms #(runtime/read-xr-effects @session)))
+
+(defn- trace-subscriptions-bench
+  []
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (let [setup-ms
+          (elapsed-ms
+           #(do
+              (doseq [i (range 5)]
+                (runtime-append! session
+                                 (format "(def %s)" (trace-cell-symbol i))))
+              (doseq [i (range 5)]
+                (let [before (trace-completions session)]
+                  (runtime-append!
+                   session
+                   (format "(let-cell [g] (trace %s g) (io:xr g))"
+                           (trace-cell-symbol i)))
+                  (let [scheduled (runtime/schedule-trace-refreshes! session)]
+                    (wait-for-trace-completions!
+                     session
+                     (+ before scheduled)))))))
+          rows
+          (mapv
+           (fn [i]
+             (let [before (trace-completions session)
+                   append-ms (elapsed-ms
+                              #(runtime-append!
+                                session
+                                (trace-additive-source i)))
+                   scheduled (runtime/schedule-trace-refreshes! session)
+                   trace-refresh-ms (wait-for-trace-completions!
+                                     session
+                                     (+ before scheduled))
+                   read-ms (xr-effect-read-ms session)]
+               {:index i
+                :target (trace-cell-symbol (mod i 5))
+                :append-ms append-ms
+                :trace-refresh-ms trace-refresh-ms
+                :xr-effect-read-ms read-ms}))
+           (range 10))
+          append-ms (mapv :append-ms rows)
+          trace-ms (vec (keep :trace-refresh-ms rows))
+          read-ms (mapv :xr-effect-read-ms rows)]
+      {:variant :effectful-trace
+       :setup-ms setup-ms
+       :append (assoc (summary append-ms) :count (count append-ms))
+       :trace-refresh (when (seq trace-ms)
+                        (assoc (summary trace-ms) :count (count trace-ms)))
+       :xr-effect-read (assoc (summary read-ms) :count (count read-ms))
+       :rows rows
+       :trace {:subscriptions (count (:trace/subscriptions @session))
+               :published (long (or (:trace/published-results @session) 0))
+               :stale-dropped (long (or (:trace/stale-results @session) 0))
+               :unchanged-dropped (long (or (:trace/unchanged-results @session)
+                                            0))}
+       :effects (count (get-in @session [:xr :effects]))
+       :graph (graph-size session)})))
+
 (defn- request-ms!
   [port command]
   (let [[_ ms response] (timed-request! port command)]
@@ -418,6 +512,7 @@
   (prn (case (first args)
          "large" (large-trace-bench)
          "incremental" (incremental-trace-bench)
+         "trace-subscriptions" (trace-subscriptions-bench)
          "multi-client" (multi-client-bench
                          {:clients (parse-count (second args) 4)
                           :blocks (parse-count (nth args 2 nil) 10)

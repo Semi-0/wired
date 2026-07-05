@@ -4,6 +4,7 @@
             [graph.compiler-2-runtime.ids :as runtime-ids]
             [propagators.cells.value :as value]
             [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -25,10 +26,23 @@
   (or (:program/epoch (net/net-dict-or-empty network))
       0))
 
+(defn- trace-graph-value
+  [v]
+  (cond
+    (semantic-trace/semantic-trace-graph? v)
+    v
+
+    :else
+    (let [base (or (behavior/base-value (behavior/strongest-value v))
+                   (behavior/base-value v))]
+      (when (semantic-trace/semantic-trace-graph? base)
+        base))))
+
 (defn- xr-launch-messages
   [network outbox-id trace-id receipt-id]
   (let [trace-graph (when trace-id
-                      (net/network-cell-strongest network trace-id))
+                      (trace-graph-value
+                       (net/network-cell-strongest network trace-id)))
         epoch (program-epoch network)
         effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
     (if (or (value/unusable? trace-graph)

@@ -189,7 +189,9 @@
     (cenv/bind-at env 'be:block-at (runtime-ops/be-block-at-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'instance (runtime-ops/instance-operator) 0)
     (cenv/bind-at env 'trace-target (runtime-ops/trace-target-operator) 0)
-    (cenv/bind-at env 'trace (runtime-ops/trace-operator graph-id) 0)
+    (cenv/bind-at env 'trace
+                  (runtime-ops/trace-operator graph-id (boundary-outbox-id))
+                  0)
     (cenv/bind-at env 'xr-io (runtime-ops/xr-io-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'io:xr (runtime-ops/io-xr-operator (boundary-outbox-id)) 0)
     (cenv/bind-at env 'slider-io

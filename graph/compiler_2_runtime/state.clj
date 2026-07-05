@@ -81,10 +81,23 @@
     (reset! session (empty-state)))
   @session)
 
+(defn- preserve-xr-traces
+  [old-state new-state]
+  (let [xr-traces (or (:xr/traces old-state)
+                      (get-in old-state [:xr :traces]))]
+    (if (and (seq xr-traces)
+             (empty? (or (:xr/traces new-state)
+                         (get-in new-state [:xr :traces]))))
+      (-> new-state
+          (assoc :xr/traces xr-traces)
+          (assoc-in [:xr :traces] xr-traces))
+      new-state)))
+
 (defn mutate-session!
   [session f]
   (locking session
-    (let [state' (f @session)]
+    (let [state @session
+          state' (preserve-xr-traces state (f state))]
       (reset! session state')
       state')))
 

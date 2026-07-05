@@ -80,13 +80,20 @@
     (catch Throwable _
       source)))
 
+(defn auto-output-display-form
+  [source target-index]
+  (if (trace-form? source)
+    (format "(be:block-at %% %d __runtime_out)" target-index)
+    (format "(block-at %% %d __runtime_out)" target-index)))
+
 (defn auto-output-source [state block source]
   (if (or (top-level-declaration? source)
           (nil? (block-by-index state (:client-id block) (inc (:index block)))))
     source
-    (format "(let-cell [__runtime_out]
-               (<-> %s __runtime_out)
-               (block-at %% %d __runtime_out)
-               __runtime_out)"
-            source
-            (inc (:index block)))))
+    (let [target-index (inc (:index block))]
+      (format "(let-cell [__runtime_out]
+                 (-> %s __runtime_out)
+                 %s
+                 __runtime_out)"
+              source
+              (auto-output-display-form source target-index)))))

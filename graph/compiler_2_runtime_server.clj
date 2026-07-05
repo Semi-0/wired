@@ -76,10 +76,30 @@
           (println (str "XR runtime on http://" xr-server/default-host ":"
                         (:port xr) "/")))))))
 
+(defn- ensure-xr-server-soon!
+  [server]
+  (let [xr-state (:xr-state server)]
+    (when (and xr-state
+               (nil? (:server @xr-state))
+               (not (:watching? @xr-state)))
+      (swap! xr-state assoc :watching? true)
+      (daemon-thread
+       "compiler-2-runtime-xr-lazy-start"
+       (fn []
+         (loop [remaining 80]
+           (when (and (pos? remaining)
+                      (nil? (:server @xr-state)))
+             (ensure-xr-server! server)
+             (when (nil? (:server @xr-state))
+               (Thread/sleep 25)
+               (recur (dec remaining)))))
+         (swap! xr-state dissoc :watching?))))))
+
 (defn- handle-runtime-command!
   [server command]
   (let [response (runtime/handle-command! (:session server) command)]
     (ensure-xr-server! server)
+    (ensure-xr-server-soon! server)
     response))
 
 (defn- handle-client

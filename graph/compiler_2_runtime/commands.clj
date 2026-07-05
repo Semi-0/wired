@@ -5,6 +5,7 @@
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.trace-session :as trace-session]
+            [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
             [graph.compiler-2-runtime.xr-projection :as xr-projection]))
 
@@ -26,35 +27,38 @@
 (def install-semantic-trace! trace-session/install-semantic-trace!)
 (def read-installed-trace trace-session/read-installed-trace)
 (def stop-installed-trace! trace-session/stop-installed-trace!)
+(def schedule-trace-refreshes! trace-subscriptions/schedule-refreshes!)
 (def read-xr-effects xr-projection/read-xr-effects)
 
 (defn handle-command!
   [session {:keys [op source] :as command}]
   (try
-    (locking session
-      {:ok true
-       :result
-       (case op
-         :tui/register (register-tui! session command)
-         :tui/append-block (append-tui-block! session command)
-         :tui/edit-block (edit-tui-block! session command)
-         :tui/submit-block (submit-tui-block! session command)
-         :tui/read-view (read-tui-view @session command)
-         :tui/unregister (unregister-tui! session command)
-         :agent/blocks (read-agent-blocks @session command)
-         :agent/block (read-agent-block @session command)
-         :agent/send-block (send-agent-block! session command)
-         :compile/source (compile-source! session source)
-         :cells/list (list-cells @session)
-         :cell/read (read-cell @session command)
-         :semantic/graph (:graph (require-state @session))
-         :semantic/trace (semantic-trace @session command)
-         :semantic/expand (semantic-expansion @session command)
-         :semantic/trace/install (install-semantic-trace! session command)
-         :semantic/trace/read (read-installed-trace @session command)
-         :semantic/trace/stop (stop-installed-trace! session command)
-         :xr/effects (read-xr-effects @session)
-         (throw (ex-info "unknown runtime op" {:op op})))})
+    (let [response (locking session
+                     {:ok true
+                      :result
+                      (case op
+                        :tui/register (register-tui! session command)
+                        :tui/append-block (append-tui-block! session command)
+                        :tui/edit-block (edit-tui-block! session command)
+                        :tui/submit-block (submit-tui-block! session command)
+                        :tui/read-view (read-tui-view @session command)
+                        :tui/unregister (unregister-tui! session command)
+                        :agent/blocks (read-agent-blocks @session command)
+                        :agent/block (read-agent-block @session command)
+                        :agent/send-block (send-agent-block! session command)
+                        :compile/source (compile-source! session source)
+                        :cells/list (list-cells @session)
+                        :cell/read (read-cell @session command)
+                        :semantic/graph (:graph (require-state @session))
+                        :semantic/trace (semantic-trace @session command)
+                        :semantic/expand (semantic-expansion @session command)
+                        :semantic/trace/install (install-semantic-trace! session command)
+                        :semantic/trace/read (read-installed-trace @session command)
+                        :semantic/trace/stop (stop-installed-trace! session command)
+                        :xr/effects (read-xr-effects @session)
+                        (throw (ex-info "unknown runtime op" {:op op})))})]
+      (schedule-trace-refreshes! session)
+      response)
     (catch Throwable t
       {:ok false
        :error (ex-message t)

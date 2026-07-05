@@ -47,7 +47,7 @@
         tick (effect-tick network)
         write-message (when (and display-id
                                  source-id
-                                 (not (value/nothing? target-value)))
+                                 (not (value/unusable? target-value)))
                         (let [effect-id [:tui/write-display
                                          display-id
                                          tick

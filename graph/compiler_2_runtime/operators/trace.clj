@@ -1,10 +1,21 @@
 (ns graph.compiler-2-runtime.operators.trace
   "Trace compiler-2 runtime operators."
-  (:require [propagators.cells.value :as value]
+  (:require [graph.compiler-2-runtime.boundary :as boundary]
+            [graph.compiler-2-runtime.ids :as runtime-ids]
+            [propagators.cells.value :as value]
             [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace]))
+
+(defn- effect-slot-key [effect-id]
+  (runtime-ids/effect-slot-key effect-id))
+
+(defn- program-epoch
+  [network]
+  (or (:program/epoch (net/net-dict-or-empty network))
+      0))
 
 (defn- trace-request-source
   [graph source-id source-value direction]
@@ -25,7 +36,7 @@
       {:node source-id :direction direction})))
 
 (defn- trace-messages
-  [network graph-id source-id direction-id target-id]
+  [network graph-id outbox-id source-id direction-id target-id]
   (let [direction (if direction-id
                     (net/network-cell-strongest network direction-id)
                     :upstream)
@@ -33,12 +44,19 @@
         source-value (net/network-cell-strongest network source-id)
         request (trace-request-source graph source-id source-value direction)]
     (if (or (value/unusable? graph)
-            (value/unusable? direction))
+            (value/unusable? direction)
+            (not (keyword? direction)))
       []
-      [(message target-id
-                (semantic-trace/trace-graph graph request))])))
+      (let [effect-id [:trace/subscribe target-id request]]
+        [(message outbox-id
+                  (obj/compound-object
+                   {(effect-slot-key effect-id)
+                    (boundary/xr-trace-subscribe-request effect-id
+                                                         request
+                                                         target-id
+                                                         (program-epoch network))}))]))))
 
-(defn trace-operator [graph-id]
+(defn trace-operator [graph-id outbox-id]
   (operator-value/operator-closure
    {:name 'trace
     :output-selector (fn [arg-ids fallback-id]
@@ -52,6 +70,7 @@
                                     {:arg-ids arg-ids})))
                   (trace-messages network
                                   graph-id
+                                  outbox-id
                                   source-id
                                   direction-id
                                   target-id)))}))
