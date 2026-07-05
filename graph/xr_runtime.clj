@@ -406,8 +406,6 @@
                                   :value value
                                   :command command})
   {:widgets (get-in @session [:xr :widgets])
-   :graph (graph->json (:graph @session)
-                       (graph-projection-options @session))
    :command command})
 
 (defn handle-command!

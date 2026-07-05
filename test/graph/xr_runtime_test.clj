@@ -43,6 +43,12 @@
     (when-not (value/unusable? current)
       (behavior/base-value current))))
 
+(defn- projected-runtime-graph
+  [session]
+  {:graph (xr/graph->json (:graph @session)
+                           {:changed-node-ids (:runtime/changed-node-ids @session)
+                            :changed-cell-ids (:runtime/changed-cells @session)})})
+
 (defn- projected-current
   [node]
   (or (get-in node [:value :current])
@@ -329,6 +335,24 @@
       (is (= 11 (obj/slot-value events 2)))
       (is (= 11 (behavior-current session "out"))))))
 
+(deftest xr-widget-event-response-does-not-replace-traced-graph
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(define-behaviors a b c)"
+                    "(def out)"
+                    "(<-> (- (+ a b) c) out)"
+                    "(let-cell [g]
+                       (trace out g)
+                       (io:xr g))"
+                    "(io:slider-panel a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (let [response (xr/handle-command! session {:op :xr/widget-event
+                                                :widget-id "slider-panel-0"
+                                                :channel "a"
+                                                :value 9})]
+      (is (contains? response :widgets))
+      (is (not (contains? response :graph))))))
+
 (deftest xr-widget-projection-uses-strongest-not-behavior-content
   (let [session (runtime/new-session)]
     (xr/handle-command! session
@@ -339,11 +363,12 @@
                          :widget-id "gain"
                          :channel "value"
                          :value 9})
-    (let [projected (xr/handle-command! session
-                                        {:op :xr/widget-event
-                                         :widget-id "gain"
-                                         :channel "value"
-                                         :value 11})
+    (xr/handle-command! session
+                        {:op :xr/widget-event
+                         :widget-id "gain"
+                         :channel "value"
+                         :value 11})
+    (let [projected (projected-runtime-graph session)
           out-id (cell-id session "out")
           content (net/network-cell-content (:program/net @session) out-id)
           strongest (net/network-cell-strongest (:program/net @session) out-id)
@@ -426,8 +451,9 @@
                                  :widget-id "mix" :channel "a" :value 10})
     (xr/handle-command! session {:op :xr/widget-event
                                  :widget-id "mix" :channel "b" :value 4})
-    (let [projected (xr/handle-command! session {:op :xr/widget-event
-                                                 :widget-id "mix" :channel "c" :value 3})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix" :channel "c" :value 3})
+    (let [projected (projected-runtime-graph session)
           current-values (set (keep #(get-in % [:value :current])
                                     (get-in projected [:graph :nodes])))]
       (is (set/subset? #{"10" "4" "3"} current-values)))
@@ -504,10 +530,11 @@
                                  :widget-id "mix" :channel "a" :value 10})
     (xr/handle-command! session {:op :xr/widget-event
                                  :widget-id "mix" :channel "b" :value 4})
-    (let [projected (xr/handle-command! session {:op :xr/widget-event
-                                                 :widget-id "mix"
-                                                 :channel "c"
-                                                 :value 3})
+    (xr/handle-command! session {:op :xr/widget-event
+                                 :widget-id "mix"
+                                 :channel "c"
+                                 :value 3})
+    (let [projected (projected-runtime-graph session)
           out-id (cell-id session "out")
           out-node (projected-node-for-cell projected out-id)
           changed-cells (set (get-in projected [:graph :changed-cell-ids]))
