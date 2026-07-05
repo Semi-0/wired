@@ -172,7 +172,14 @@
                       [(:block-id block) (:index-id block)
                        (:next-id block) (:text-id block)
                        (:display-id block)])]
-       (install-block-slots n0 block)))
+       (install-block-slots
+        (if (:text-current-source? block)
+          (nb/install-cell n0
+                           (:text-id block)
+                           (:text-current block)
+                           (:text-current block))
+          n0)
+        block)))
    program-net
    (all-blocks state)))
 
@@ -253,7 +260,8 @@
                     source
                     env
                     {:net program-net-input
-                     :seed [:runtime/block (:order block) (:epoch block)]})
+                     :seed [:runtime/block (:order block) (:epoch block)]
+                     :reuse-existing-bindings? true})
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
           program-net2 (if (and needs-live-graph?
                                 (not top-level-trace?))

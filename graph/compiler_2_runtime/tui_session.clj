@@ -29,6 +29,7 @@
 (def install-block-slots program/install-block-slots)
 (def install-instance-slots program/install-instance-slots)
 (def rebuild-program! input/rebuild-program!)
+(def install-block-incremental! input/install-block-incremental!)
 
 (declare prepare-block-targets!
          read-tui-view)
@@ -46,15 +47,9 @@
   (let [view-id (stable-node-id :tui client-id :view)
         instance-id (stable-node-id :tui client-id :instance)
         blocks-id (stable-node-id :tui client-id :blocks)]
-    {:client-id client-id
-     :view-id view-id
-     :instance-id instance-id
-     :blocks-id blocks-id
-     :head-id nil
-     :tail-id nil
-     :next-index 0
-     :client-count 0
-     :blocks []}))
+    {:client-id client-id, :view-id view-id, :instance-id instance-id,
+     :blocks-id blocks-id, :head-id nil, :tail-id nil, :next-index 0,
+     :client-count 0, :blocks []}))
 
 (defn install-tui-instance
   [network {:keys [view-id instance-id blocks-id]}]
@@ -82,8 +77,7 @@
   (let [tui (ensure-tui! session client-id)]
     (swap! session update-in [:tuis client-id :client-count] (fnil inc 0))
     (let [tui (get-in @session [:tuis client-id])]
-      {:client-id (:client-id tui)
-       :view-id (pr-str (:view-id tui))
+      {:client-id (:client-id tui), :view-id (pr-str (:view-id tui)),
        :next-index (:next-index tui)})))
 
 (defn tui!
@@ -103,6 +97,9 @@
                :next-id (ids/new-node-id)
                :index index
                :epoch 0}
+        block (cond-> block
+                has-text? (assoc :text-current text
+                                 :text-current-source? true))
         state @session
         n0 (-> (:network state)
                (nb/install-cell (:block-id block))
@@ -134,11 +131,14 @@
       (prepare-block-targets! session client-id index text)
       (swap! session assign-source-order client-id index))
     (when rebuild?
-      (rebuild-program! session))
-    {:client-id client-id
-     :index index
-     :block-id (pr-str (:block-id block))
-     :text-id (pr-str (:text-id block))
+      (if has-text?
+        (let [block' (assoc (block-by-index @session client-id index)
+                            :client-id client-id)]
+          (install-block-incremental! session block'))
+        (rebuild-program! session)))
+    {:client-id client-id, :index index,
+     :block-id (pr-str (:block-id block)),
+     :text-id (pr-str (:text-id block)),
      :display-id (pr-str (:display-id block))}))
 
 (defn next-view-block-index
@@ -230,7 +230,9 @@
     (let [block block0
           new-epoch (inc (or (:epoch block) 0))
           _ (swap! session update-block client-id index
-                   #(assoc % :epoch new-epoch))
+                   #(assoc % :epoch new-epoch
+                             :text-current text
+                             :text-current-source? true))
           [tasks n1] (core/eval-cells [(message (:text-id block) text)]
                                       (:network @session))
           n2 (core/run-tasks tasks n1)]
@@ -238,8 +240,7 @@
       (when-not (some? (:order block))
         (swap! session assign-source-order client-id index))
       (rebuild-program! session)
-      {:client-id client-id
-       :index index})))
+      {:client-id client-id, :index index})))
 
 (defn submit-tui-block!
   [session {:keys [client-id text]}]
@@ -261,7 +262,7 @@
 
 (defn block-value
   [state block]
-  (net/network-cell-strongest (:network state) (:text-id block)))
+  (block-text state block))
 
 (defn block-display-value
   [state block]
@@ -394,6 +395,5 @@
                (if (pos? next-count)
                  (assoc-in state [:tuis client-id :client-count] next-count)
                  (update state :tuis dissoc client-id)))))
-    {:client-id client-id
-     :remaining-clients @remaining
+    {:client-id client-id, :remaining-clients @remaining,
      :unregistered true}))

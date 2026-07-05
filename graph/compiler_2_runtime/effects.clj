@@ -19,16 +19,32 @@
 (def record-widget-register graphp/record-widget-register)
 (def block-by-text-id block-model/block-by-text-id)
 (def block-by-display-id block-model/block-by-display-id)
+(def update-block block-model/update-block)
+
+(defn assoc-block-current-text
+  [state block payload tick]
+  (update-block state
+                (:client-id block)
+                (:index block)
+                #(assoc % :text-current payload
+                          :text-effect-tick tick)))
 
 (defn write-block-value
-  [state block _epoch payload]
-  (let [current (net/network-cell-strongest (:network state) (:text-id block))]
-    (if (= current payload)
+  [state block epoch payload]
+  (let [epoch (long (or epoch 0))
+        current-tick (long (or (:text-effect-tick block) Long/MIN_VALUE))]
+    (if (< epoch current-tick)
       state
-      (let [[tasks n1] (core/eval-cells [(message (:text-id block) payload)]
-                                        (:network state))
-            n2 (core/run-tasks tasks n1)]
-        (assoc state :network n2)))))
+      (let [state (assoc-block-current-text state block payload epoch)
+        current (net/network-cell-strongest (:network state) (:text-id block))]
+        (if (or (= current payload)
+                (and (not (value/unusable? current))
+                     (not= current payload)))
+          state
+          (let [[tasks n1] (core/eval-cells [(message (:text-id block) payload)]
+                                            (:network state))
+                n2 (core/run-tasks tasks n1)]
+            (assoc state :network n2)))))))
 
 (defn outbox-effects
   [program-net]
@@ -109,14 +125,15 @@
           (update-in [:tui :effects] (fnil conj []) request))
       state)))
 
-(defn graph-size
+(defn graph-score
   [request]
   (let [payload (:boundary/payload request)
         graph (if (semantic-trace/semantic-trace-graph? payload)
                 payload
                 (:graph payload))]
     (+ (count (:nodes graph))
-       (count (:edges graph)))))
+       (count (:edges graph))
+       (count (:values graph)))))
 
 (defn delivery-key
   [request]
@@ -131,7 +148,6 @@
     [(:boundary/port request)
      (:boundary/kind request)
      (:boundary/target request)
-     (:boundary/id request)
      (:boundary/epoch request)]
 
     [(:boundary/port request)
@@ -153,7 +169,7 @@
     (prefer-latest-boundary-request? request)
     request
 
-    (>= (graph-size old) (graph-size request))
+    (>= (graph-score old) (graph-score request))
     old
 
     :else

@@ -69,6 +69,7 @@
    :program/results {}
    :program/epoch 0
    :runtime/commit-tick 0
+   :runtime/full-rebuild-fallbacks 0
    :block-order []
    :next-order 0
    :traces {}
@@ -79,6 +80,13 @@
   (when-not @session
     (reset! session (empty-state)))
   @session)
+
+(defn mutate-session!
+  [session f]
+  (locking session
+    (let [state' (f @session)]
+      (reset! session state')
+      state')))
 
 (defn require-state
   [state]

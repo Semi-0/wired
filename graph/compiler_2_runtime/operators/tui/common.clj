@@ -9,6 +9,13 @@
 (defn effect-slot-key [effect-id]
   (runtime-ids/effect-slot-key effect-id))
 
+(defn effect-tick
+  [network]
+  (let [dict (net/net-dict-or-empty network)
+        program-epoch (long (or (:program/epoch dict) 0))
+        commit-tick (long (or (:runtime/commit-tick dict) 0))]
+    (+ (* program-epoch 1000000000) commit-tick)))
+
 (defn declared-slot-parent-id
   [network block-id slot-key]
   (some->> (get (obj/accessor-declarations-for network block-id) slot-key)

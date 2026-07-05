@@ -27,7 +27,9 @@
 (defn project-xr-effects
   [state]
   {:effects (mapv #(project-xr-effect state %)
-                  (get-in (require-state state) [:xr :effects] []))
+                  (sort-by (juxt :boundary/epoch
+                                 (comp pr-str :boundary/id))
+                           (get-in (require-state state) [:xr :effects] [])))
    :launched (vals (get-in state [:xr :launched] {}))
    :widgets (get-in state [:xr :widgets] {})
    :changed-cells (mapv pr-str (:runtime/changed-cells state))

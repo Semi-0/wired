@@ -13,6 +13,7 @@
 
 (def require-state state/require-state)
 (def daemon-executor state/daemon-executor)
+(def mutate-session! state/mutate-session!)
 (def resolve-cell-row cells/resolve-cell-row)
 (def trace-cell-id-for-label cells/trace-cell-id-for-label)
 
@@ -73,21 +74,22 @@
 
 (defn tick-trace!
   [session trace-id]
-  (swap! session
-         (fn [state]
-           (if-let [trace (get-in state [:traces trace-id])]
-             (let [next-epoch (inc (:epoch trace))
-                   [tasks n1] (core/eval-cells
-                               [(message (:epoch-id trace)
-                                         (semantic-trace/epoch next-epoch))]
-                               (:network trace))
-                   n2 (core/run-tasks tasks n1)]
-               (assoc-in state
-                         [:traces trace-id]
-                         (assoc trace
-                                :epoch next-epoch
-                                :network n2)))
-             state))))
+  (mutate-session!
+   session
+   (fn [state]
+     (if-let [trace (get-in state [:traces trace-id])]
+       (let [next-epoch (inc (:epoch trace))
+             [tasks n1] (core/eval-cells
+                         [(message (:epoch-id trace)
+                                   (semantic-trace/epoch next-epoch))]
+                         (:network trace))
+             n2 (core/run-tasks tasks n1)]
+         (assoc-in state
+                   [:traces trace-id]
+                   (assoc trace
+                          :epoch next-epoch
+                          :network n2)))
+       state))))
 
 (defn install-semantic-trace!
   [session request]

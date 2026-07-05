@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime.input :as runtime-input]
             [graph.compiler-2-runtime-server :as runtime-server]
             [graph.json :as json]
             [graph.xr-runtime :as xr]
@@ -904,6 +905,45 @@
         (is (= "77" (projected-current a-node)))
         (is (= 78 (get-in view [:blocks 7 :value])))
         (is (= 77 (get-in view [:blocks 9 :value])))))))
+
+(deftest installed-trace-ticks-do-not-stall-large-be-block-append
+  (let [session (runtime/new-session)
+        trace-id (atom nil)]
+    (try
+      (runtime/register-tui! session {:client-id "A"})
+      (runtime/append-tui-block! session {:client-id "A"
+                                          :text "(def x0)"
+                                          :rebuild? false})
+      (runtime/append-tui-block! session {:client-id "A"
+                                          :text "(<-> 0 x0)"
+                                          :rebuild? false})
+      (doseq [i (range 1 61)]
+        (runtime/append-tui-block!
+         session
+         {:client-id "A"
+          :text (format "(-> (+ %d x%d) x%d)" i (dec i) i)
+          :rebuild? false}))
+      (runtime-input/rebuild-program! session)
+      (reset! trace-id
+              (:trace-id (runtime/install-semantic-trace!
+                          session
+                          {:label "x60"
+                           :direction :upstream
+                           :interval-ms 100})))
+      (Thread/sleep 500)
+      (let [append-result (future
+                            (runtime/append-tui-block!
+                             session
+                             {:client-id "A"
+                              :text "(-> x30 (be:block 80))"}))
+            result (deref append-result 20000 ::timeout)]
+        (when (= ::timeout result)
+          (future-cancel append-result))
+        (is (not= ::timeout result))
+        (is (= 62 (:index result))))
+      (finally
+        (when @trace-id
+          (runtime/stop-installed-trace! session {:trace-id @trace-id}))))))
 
 (deftest xr-io-supports-local-let-cell-receipt-target
   (let [session (runtime/new-session)]

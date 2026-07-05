@@ -425,6 +425,10 @@
      :expansions (:expansions semantic)
      :edges (vec (distinct (concat (:edges semantic) (:edges structural))))}))
 
+(defn compiled-application-semantic-graph
+  [compiled network]
+  (application-graph compiled network))
+
 (defn- parse-node-id
   [node]
   (cond

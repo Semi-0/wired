@@ -62,4 +62,6 @@
   [state block]
   (if (contains? block :source)
     (:source block)
-    (net/network-cell-strongest (:network state) (:text-id block))))
+    (if (contains? block :text-current)
+      (:text-current block)
+      (net/network-cell-strongest (:network state) (:text-id block)))))

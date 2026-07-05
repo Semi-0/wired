@@ -319,8 +319,10 @@
                               :text "(def-net inc1 [x] [out]
                                       (<-> (+ x 2) out))"})
     (let [view (runtime/read-tui-view @session {:client-id "grow"})]
-      (is (= :bool4/contradiction (get-in view [:blocks 0 :value])))
-      (is (= 5 (get-in view [:blocks 1 :value]))))))
+      (is (= "(def-net inc1 [x] [out]
+                                      (<-> (+ x 2) out))"
+             (get-in view [:blocks 0 :value])))
+      (is (= 6 (get-in view [:blocks 1 :value]))))))
 
 (deftest client-instances-have-separate-block-views-but-one-env
   (let [session (runtime/new-session)]
@@ -384,6 +386,67 @@
                                         (<-> (+ x 1) out))"})
     (let [view (runtime/read-tui-view @session {:client-id "order"})]
       (is (= 5 (get-in view [:blocks 1 :value]))))))
+
+(deftest later-def-net-repairs-earlier-watch-without-full-rebuild
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [out] (later 4 out) (block-at % 1 out) out)"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(def-net later [x] [out] (<-> (+ x 1) out))"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})]
+      (is (= 5 (get-in view [:blocks 1 :value])))
+      (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
+
+(deftest be-block-watch-installs-and-updates-without-full-rebuild
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def x0)"})
+    (doseq [i (range 1 11)]
+      (runtime/append-tui-block!
+       session
+       {:client-id "A"
+        :text (format "(-> (+ %d x%d) x%d)" i (dec i) i)}))
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> x10 (be:block 20))"})
+    (runtime/commit-runtime-input!
+     session
+     {:runtime/input :cell-message
+      :cell-id (cenv/binding-id (cenv/lookup (:program/env @session) 'x0))
+      :update 1})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})]
+      (is (= 56 (get-in view [:blocks 20 :value])))
+      (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
+
+(deftest edited-be-block-watch-uses-new-display-epoch
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(def x0)"})
+    (doseq [i (range 1 11)]
+      (runtime/append-tui-block!
+       session
+       {:client-id "A"
+        :text (format "(-> (+ %d x%d) x%d)" i (dec i) i)}))
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> x10 (be:block 20))"})
+    (runtime/commit-runtime-input!
+     session
+     {:runtime/input :cell-message
+      :cell-id (cenv/binding-id (cenv/lookup (:program/env @session) 'x0))
+      :update 1})
+    (is (= 56 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                      [:blocks 20 :value])))
+    (runtime/edit-tui-block! session {:client-id "A"
+                                      :index 11
+                                      :text "(-> x5 (be:block 20))"})
+    (let [view (runtime/read-tui-view @session {:client-id "A"})]
+      (is (= 16 (get-in view [:blocks 20 :value])))
+      (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
 
 (deftest later-def-net-updates-earlier-free-cell-watch
   (let [session (runtime/new-session)]

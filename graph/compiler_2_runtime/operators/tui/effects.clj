@@ -12,6 +12,7 @@
 (def block-at-display-id common/block-at-display-id)
 (def tui-write-effect-request common/tui-write-effect-request)
 (def tui-display-effect-request common/tui-display-effect-request)
+(def effect-tick common/effect-tick)
 
 (defn- write-block-messages
   [network outbox-id text-id target-id]
@@ -20,9 +21,7 @@
         target-value (net/network-cell-strongest network target-id)
         write-message (when (and text-id
                                  (not (value/nothing? target-value)))
-                        (let [epoch (or (:program/epoch
-                                         (net/net-dict-or-empty network))
-                                        0)
+                        (let [epoch (effect-tick network)
                               effect-id [:tui/write-block
                                          text-id
                                          epoch
@@ -45,9 +44,7 @@
   [network outbox-id display-id source-id]
   (let [target-value (when source-id
                        (net/network-cell-strongest network source-id))
-        tick (or (:runtime/commit-tick (net/net-dict-or-empty network))
-                 (:program/epoch (net/net-dict-or-empty network))
-                 0)
+        tick (effect-tick network)
         write-message (when (and display-id
                                  source-id
                                  (not (value/nothing? target-value)))

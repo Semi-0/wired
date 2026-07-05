@@ -1,7 +1,10 @@
 (ns graph.compiler-2-tui-bench
   "Small benchmark for wired TUI trace rebuild/poll/render paths."
   (:require [graph.compiler-2-runtime-server :as server]
-            [graph.compiler-2-tui :as tui]))
+            [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime.input :as runtime-input]
+            [graph.compiler-2-tui :as tui]
+            [propagators.compiler-2.env :as cenv]))
 
 (def simple-trace-commands
   [{:op :tui/register :client-id "A"}
@@ -44,9 +47,13 @@
      (/ (double (- (System/nanoTime) t)) 1000000.0)
      response]))
 
+(defn- read-view-for-client
+  [port client-id]
+  (:result (request! port {:op :tui/read-view :client-id client-id})))
+
 (defn- read-view
   [port]
-  (:result (request! port {:op :tui/read-view :client-id "A"})))
+  (read-view-for-client port "A"))
 
 (defn- bench
   []
@@ -81,6 +88,336 @@
       (finally
         (close)))))
 
+(defn- runtime-append!
+  [session text]
+  (runtime/append-tui-block! session {:client-id "A" :text text}))
+
+(defn- runtime-append-source!
+  [session text]
+  (runtime/append-tui-block! session {:client-id "A"
+                                      :text text
+                                      :rebuild? false}))
+
+(defn- graph-size
+  [session]
+  {:nodes (count (:nodes (:graph @session)))
+   :edges (count (:edges (:graph @session)))})
+
+(defn- cell-id
+  [session label]
+  (cenv/binding-id (cenv/lookup (:program/env @session) (symbol label))))
+
+(defn- parse-count
+  [s default]
+  (if s
+    (Long/parseLong s)
+    default))
+
+(defn- client-id
+  [i]
+  (str "c" i))
+
+(defn- value-symbol
+  [client-index value-index]
+  (str (client-id client-index) "x" value-index))
+
+(defn- value-source
+  [client-index value-index]
+  (if (zero? value-index)
+    (format "(def %s 0)" (value-symbol client-index 0))
+    (format "(-> (+ %d %s) %s)"
+            value-index
+            (value-symbol client-index (dec value-index))
+            (value-symbol client-index value-index))))
+
+(defn- watcher-source
+  [client-index watcher-index target-index]
+  (format "(-> %s (be:block %d))"
+          (value-symbol client-index watcher-index)
+          target-index))
+
+(defn- request-ms!
+  [port command]
+  (let [[_ ms response] (timed-request! port command)]
+    (when-not (:ok response)
+      (throw (ex-info "benchmark request failed"
+                      {:command command
+                       :response response})))
+    ms))
+
+(defn- append-block-ms!
+  [port client-id text]
+  (request-ms! port
+               (cond-> {:op :tui/append-block
+                        :client-id client-id}
+                 text (assoc :text text))))
+
+(defn- multi-client-bench
+  [{:keys [clients blocks watchers]
+    :or {clients 4 blocks 10 watchers 10}}]
+  (let [{:keys [port close]} (server/start-server 0)]
+    (try
+      (let [client-indexes (range clients)
+            register-ms (mapv #(request-ms!
+                                port
+                                {:op :tui/register
+                                 :client-id (client-id %)})
+                              client-indexes)
+            block-ms (mapv (fn [client-index]
+                             (mapv #(append-block-ms!
+                                     port
+                                     (client-id client-index)
+                                     (value-source client-index %))
+                                   (range blocks)))
+                           client-indexes)
+            target-ms (mapv (fn [client-index]
+                              (mapv (fn [_]
+                                      (request-ms!
+                                       port
+                                       {:op :tui/append-block
+                                        :client-id (client-id client-index)
+                                        :rebuild? false}))
+                                    (range watchers)))
+                            client-indexes)
+            watcher-ms (mapv (fn [client-index]
+                               (mapv #(append-block-ms!
+                                       port
+                                       (client-id client-index)
+                                       (watcher-source client-index
+                                                       (mod % blocks)
+                                                       (+ blocks %)))
+                                     (range watchers)))
+                             client-indexes)
+            read-ms (mapv (fn [client-index]
+                            (samples 3
+                                     #(request!
+                                       port
+                                       {:op :tui/read-view
+                                        :client-id (client-id client-index)})))
+                          client-indexes)
+            views (mapv #(read-view-for-client port (client-id %))
+                        client-indexes)
+            all-block-ms (vec (mapcat identity block-ms))
+            all-target-ms (vec (mapcat identity target-ms))
+            all-watcher-ms (vec (mapcat identity watcher-ms))
+            all-read-ms (vec (mapcat identity read-ms))
+            graph (:result (request! port {:op :semantic/graph}))]
+        {:clients clients
+         :blocks-per-client blocks
+         :watchers-per-client watchers
+         :requests {:register (summary register-ms)
+                    :source-block-append (summary all-block-ms)
+                    :target-block-append (summary all-target-ms)
+                    :watcher-append (summary all-watcher-ms)
+                    :read-view (summary all-read-ms)}
+         :totals-ms {:register (reduce + register-ms)
+                     :source-block-append (reduce + all-block-ms)
+                     :target-block-append (reduce + all-target-ms)
+                     :watcher-append (reduce + all-watcher-ms)
+                     :read-view (reduce + all-read-ms)}
+         :view {:blocks-per-client (mapv (comp count :blocks) views)
+                :bytes-per-client (mapv #(count (.getBytes (pr-str %) "UTF-8"))
+                                        views)}
+         :graph {:nodes (count (:nodes graph))
+                 :edges (count (:edges graph))}})
+      (finally
+        (close)))))
+
+(defn- profiled-step!
+  [port rows phase client-index item command]
+  (let [started (System/nanoTime)
+        response (request! port command)
+        ms (/ (double (- (System/nanoTime) started)) 1000000.0)
+        row {:phase phase
+             :client (when client-index (client-id client-index))
+             :item item
+             :ms ms
+             :ok (:ok response)}]
+    (swap! rows conj row)
+    (when-not (:ok response)
+      (throw (ex-info "benchmark request failed"
+                      {:command command
+                       :response response})))
+    row))
+
+(defn- slowest-rows
+  [rows n]
+  (->> rows
+       (sort-by :ms >)
+       (take n)
+       vec))
+
+(defn- phase-summary
+  [rows phase]
+  (let [xs (mapv :ms (filter #(= phase (:phase %)) rows))]
+    (when (seq xs)
+      (assoc (summary xs) :count (count xs)))))
+
+(defn- multi-client-profile-bench
+  [{:keys [clients blocks watchers slow-ms max-ms]
+    :or {clients 4 blocks 10 watchers 10 slow-ms 5000 max-ms 60000}}]
+  (let [{:keys [port close]} (server/start-server 0)
+        rows (atom [])
+        started (System/nanoTime)]
+    (try
+      (letfn [(elapsed-total-ms []
+                (/ (double (- (System/nanoTime) started)) 1000000.0))
+              (stopped? [row]
+                (or (> (:ms row) slow-ms)
+                    (> (elapsed-total-ms) max-ms)))
+              (finish [reason]
+                (let [rows* @rows]
+                  {:clients clients
+                   :blocks-per-client blocks
+                   :watchers-per-client watchers
+                   :stopped reason
+                   :elapsed-ms (elapsed-total-ms)
+                   :phases {:register (phase-summary rows* :register)
+                            :source-block-append (phase-summary rows* :source-block)
+                            :target-block-append (phase-summary rows* :target-block)
+                            :watcher-append (phase-summary rows* :watcher)
+                            :read-view (phase-summary rows* :read-view)}
+                   :slowest (slowest-rows rows* 10)
+                   :completed-requests (count rows*)}))
+              (step! [phase client-index item command]
+                (let [row (profiled-step! port rows phase client-index item command)]
+                  (when (stopped? row)
+                    (throw (ex-info "profile stopped"
+                                    {:reason (if (> (:ms row) slow-ms)
+                                               :slow-request
+                                               :time-budget)})))
+                  row))]
+        (try
+          (doseq [client-index (range clients)]
+            (step! :register client-index nil
+                   {:op :tui/register
+                    :client-id (client-id client-index)}))
+          (doseq [client-index (range clients)
+                  block-index (range blocks)]
+            (step! :source-block client-index block-index
+                   {:op :tui/append-block
+                    :client-id (client-id client-index)
+                    :text (value-source client-index block-index)}))
+          (doseq [client-index (range clients)
+                  target-index (range watchers)]
+            (step! :target-block client-index target-index
+                   {:op :tui/append-block
+                    :client-id (client-id client-index)
+                    :rebuild? false}))
+          (doseq [client-index (range clients)
+                  watcher-index (range watchers)]
+            (step! :watcher client-index watcher-index
+                   {:op :tui/append-block
+                    :client-id (client-id client-index)
+                    :text (watcher-source client-index
+                                          (mod watcher-index blocks)
+                                          (+ blocks watcher-index))}))
+          (doseq [client-index (range clients)]
+            (step! :read-view client-index nil
+                   {:op :tui/read-view
+                    :client-id (client-id client-index)}))
+          (finish nil)
+          (catch clojure.lang.ExceptionInfo e
+            (finish (or (:reason (ex-data e)) :error)))))
+      (finally
+        (close)))))
+
+(defn- large-trace-bench
+  []
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime-append-source! session "(def x0)")
+    (runtime-append-source! session "(<-> 0 x0)")
+    (doseq [i (range 1 101)]
+      (runtime-append-source! session
+                              (format "(-> (+ %d x%d) x%d)"
+                                      i
+                                      (dec i)
+                                      i)))
+    (let [setup-ms (elapsed-ms #(runtime-input/rebuild-program! session))
+          trace-ms (elapsed-ms
+                    #(runtime-append!
+                      session
+                      "(let-cell [g] (trace x100 g) (io:xr g))"))
+          watcher-ms (elapsed-ms
+                      #(runtime-append!
+                        session
+                        "(-> x50 (be:block 120))"))]
+      {:setup-rebuild-ms setup-ms
+       :trace-ms trace-ms
+       :watcher-ms watcher-ms
+       :blocks (count (get-in @session [:tuis "A" :blocks]))
+       :graph (graph-size session)})))
+
+(defn- incremental-trace-bench
+  []
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime-append-source! session "(def x0)")
+    (doseq [i (range 1 101)]
+      (runtime-append-source! session
+                              (format "(-> (+ %d x%d) x%d)"
+                                      i
+                                      (dec i)
+                                      i)))
+    (let [setup-ms (elapsed-ms #(runtime-input/rebuild-program! session))
+          fallback-before (:runtime/full-rebuild-fallbacks @session)
+          watcher-ms (elapsed-ms
+                      #(runtime-append!
+                        session
+                        "(-> x50 (be:block 120))"))
+          update-ms (elapsed-ms
+                     #(runtime/commit-runtime-input!
+                       session
+                       {:runtime/input :cell-message
+                        :cell-id (cell-id session "x0")
+                        :update 1}))
+          edit-ms (elapsed-ms
+                   #(runtime/edit-tui-block!
+                     session
+                     {:client-id "A"
+                      :index 101
+                      :text "(-> x40 (be:block 120))"}))
+          forward-session (runtime/new-session)
+          _ (runtime/register-tui! forward-session {:client-id "A"})
+          _ (runtime-append! forward-session
+                             "(let-cell [out] (later 4 out) (block-at % 1 out) out)")
+          _ (runtime/append-tui-block! forward-session {:client-id "A"})
+          forward-ms (elapsed-ms
+                      #(runtime-append!
+                        forward-session
+                        "(def-net later [x] [out] (<-> (+ x 1) out))"))]
+      {:setup-rebuild-ms setup-ms
+       :incremental-watcher-ms watcher-ms
+       :post-install-update-ms update-ms
+       :edit-watcher-ms edit-ms
+       :forward-ref-repair-ms forward-ms
+       :target-value (get-in (runtime/read-tui-view @session {:client-id "A"})
+                             [:blocks 120 :value])
+       :forward-ref-value (get-in (runtime/read-tui-view @forward-session
+                                                         {:client-id "A"})
+                                  [:blocks 1 :value])
+       :fallback-count (- (long (:runtime/full-rebuild-fallbacks @session))
+                          (long fallback-before))
+       :forward-ref-fallback-count (:runtime/full-rebuild-fallbacks
+                                    @forward-session)
+       :incremental-installs (:runtime/incremental-installs @session)
+       :blocks (count (get-in @session [:tuis "A" :blocks]))
+       :graph (graph-size session)})))
+
 (defn -main
-  [& _args]
-  (prn (bench)))
+  [& args]
+  (prn (case (first args)
+         "large" (large-trace-bench)
+         "incremental" (incremental-trace-bench)
+         "multi-client" (multi-client-bench
+                         {:clients (parse-count (second args) 4)
+                          :blocks (parse-count (nth args 2 nil) 10)
+                          :watchers (parse-count (nth args 3 nil) 10)})
+         "multi-client-profile" (multi-client-profile-bench
+                                 {:clients (parse-count (second args) 4)
+                                  :blocks (parse-count (nth args 2 nil) 10)
+                                  :watchers (parse-count (nth args 3 nil) 10)
+                                  :slow-ms (parse-count (nth args 4 nil) 5000)
+                                  :max-ms (parse-count (nth args 5 nil) 60000)})
+         (bench))))

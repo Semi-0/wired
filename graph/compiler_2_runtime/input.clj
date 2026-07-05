@@ -4,6 +4,7 @@
             [graph.compiler-2-runtime.effects :as effects]
             [graph.compiler-2-runtime.graph-projection :as graphp]
             [graph.compiler-2-runtime.program :as program]
+            [graph.compiler-2-runtime.program-rebuild :as program-rebuild]
             [graph.compiler-2-runtime.state :as state]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
@@ -16,9 +17,11 @@
 (def record-runtime-transaction graphp/record-runtime-transaction)
 (def assoc-graph-cell-value graphp/assoc-graph-cell-value)
 (def settle-application-props program/settle-application-props)
-(def rebuild-program-state program/rebuild-program-state)
+(def rebuild-program-state program-rebuild/rebuild-program-state)
+(def incremental-block-state program-rebuild/incremental-block-state)
 (def read-source-forms program/read-source-forms)
 (def ensure-session-state! state/ensure-session-state!)
+(def mutate-session! state/mutate-session!)
 (def default-xr-client-id state/default-xr-client-id)
 (def external-source-client-id state/external-source-client-id)
 (def next-global-order block-model/next-global-order)
@@ -170,21 +173,40 @@
 
 (defn commit-runtime-input!
   [session input]
-  (swap! session commit-runtime-input input)
-  @session)
+  (mutate-session! session #(commit-runtime-input % input)))
 
 (defn rebuild-program!
   [session]
-  (swap! session
-         (fn [state]
-           (let [before-net (:program/net state)]
-             (-> state
-                 rebuild-program-state
-                 perform-boundary-effects
-                 replay-runtime-inputs
-                 run-runtime-cycle
-                 (record-runtime-transaction before-net)))))
-  @session)
+  (mutate-session!
+   session
+   (fn [state]
+     (let [before-net (:program/net state)]
+       (-> state
+           rebuild-program-state
+           perform-boundary-effects
+           replay-runtime-inputs
+           run-runtime-cycle
+           (record-runtime-transaction before-net))))))
+
+(defn install-block-incremental!
+  [session block]
+  (mutate-session!
+   session
+   (fn [state]
+     (let [before-net (:program/net state)]
+       (if-let [state' (incremental-block-state state block)]
+         (-> state'
+             perform-boundary-effects
+             replay-runtime-inputs
+             run-runtime-cycle
+             (record-runtime-transaction before-net))
+         (-> state
+             (update :runtime/full-rebuild-fallbacks (fnil inc 0))
+             rebuild-program-state
+             perform-boundary-effects
+             replay-runtime-inputs
+             run-runtime-cycle
+             (record-runtime-transaction before-net)))))))
 
 (defn extend-source!
   "Append compiler source to the active runtime without replacing TUI state.

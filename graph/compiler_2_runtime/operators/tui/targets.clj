@@ -11,6 +11,7 @@
 (def block-at-text-id common/block-at-text-id)
 (def tui-write-effect-request common/tui-write-effect-request)
 (def trace-target-value common/trace-target-value)
+(def effect-tick common/effect-tick)
 
 (defn- block-target-messages
   [network outbox-id instance-id index-id target-id]
@@ -22,9 +23,7 @@
         target-value (net/network-cell-strongest network target-id)
         write-message (when (and text-id
                                  (not (value/nothing? target-value)))
-                        (let [epoch (or (:program/epoch
-                                         (net/net-dict-or-empty network))
-                                        0)
+                        (let [epoch (effect-tick network)
                               effect-id [:tui/write-block
                                          text-id
                                          epoch
