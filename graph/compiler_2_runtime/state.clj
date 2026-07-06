@@ -79,9 +79,28 @@
    :xr {:launched {}}
    :tuis {}})
 
+(defn- initialized-state?
+  [state]
+  (and (map? state)
+       (net/network? (:network state))
+       (net/network? (:program/net state))
+       (map? (:program/env state))))
+
+(defn- repair-partial-state
+  [state]
+  (let [base (empty-state)]
+    (cond-> base
+      (seq (get-in state [:runtime :temperature :samples]))
+      (assoc-in [:runtime :temperature :samples]
+                (get-in state [:runtime :temperature :samples]))
+
+      (seq (:runtime/network-cache-stats state))
+      (assoc :runtime/network-cache-stats
+             (:runtime/network-cache-stats state)))))
+
 (defn ensure-session-state! [session]
-  (when-not @session
-    (reset! session (empty-state)))
+  (when-not (initialized-state? @session)
+    (reset! session (repair-partial-state @session)))
   @session)
 
 (defn- preserve-xr-traces

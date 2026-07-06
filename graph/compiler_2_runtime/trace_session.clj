@@ -2,6 +2,7 @@
   "Installed semantic trace sessions for compiler-2 runtime."
   (:require [graph.compiler-2-runtime.cells :as cells]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.core :as core]
             [propagators.ids :as ids]
@@ -83,8 +84,11 @@
                          [(message (:epoch-id trace)
                                    (semantic-trace/epoch next-epoch))]
                          (:network trace))
-             n2 (core/run-tasks tasks n1)]
-         (assoc-in state
+             [state' n2] (temperature/run-tasks state
+                                                :propagation/trace-tick
+                                                tasks
+                                                n1)]
+         (assoc-in state'
                    [:traces trace-id]
                    (assoc trace
                           :epoch next-epoch
@@ -109,7 +113,10 @@
                (nb/install-cell epoch-id (semantic-trace/epoch 0) (semantic-trace/epoch 0))
                (nb/install-cell out-id))
         [prop-id n1] ((semantic-trace/p:semantic-trace request-id graph-id epoch-id out-id) n0)
-        n2 (nb/run-propagators n1 [prop-id])
+        [state' n2] (temperature/run-propagators state
+                                                 :propagation/trace-install
+                                                 n1
+                                                 [prop-id])
         executor (daemon-executor (str "semantic-trace-clock-" trace-id))
         stop #(do (.shutdownNow executor) nil)
         trace {:trace-id trace-id
@@ -123,7 +130,9 @@
                :out-id out-id
                :epoch 0
                :stop stop}]
-    (swap! session assoc-in [:traces trace-id] trace)
+    (swap! session #(-> %
+                        (merge (select-keys state' [:runtime]))
+                        (assoc-in [:traces trace-id] trace)))
     (.scheduleAtFixedRate executor
                           #(tick-trace! session trace-id)
                           interval-ms

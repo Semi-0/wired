@@ -2,6 +2,7 @@
   "Transactional rebuild path for compiler-2 runtime source blocks."
   (:require [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.program-topology :as topology]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.main :as compiler]
@@ -43,9 +44,12 @@
                     {:net program-net-input
                      :seed [:runtime/block (:order block) (:epoch block)]
                      :reuse-existing-bindings? true})
-          program-net (nb/run-propagators
-                       (:net compiled)
-                       (topology-props (:net compiled) (:props compiled)))]
+          props (topology-props (:net compiled) (:props compiled))
+          [state program-net] (temperature/run-propagators
+                               state
+                               :propagation/compile-topology
+                               (:net compiled)
+                               props)]
       (-> state
           (assoc :program/net program-net
                  :program/env (:env compiled)
@@ -170,8 +174,11 @@
         [tasks n1] (core/eval-cells [(message graph-id graph)]
                                     (nb/ensure-cell (:program/net state)
                                                     graph-id))
-        n2 (core/run-tasks tasks n1)]
-    (assoc state
+        [state' n2] (temperature/run-tasks state
+                                           :propagation/publish-graph
+                                           tasks
+                                           n1)]
+    (assoc state'
            :program/net n2
            :program/graph graph
            :graph graph)))
@@ -264,7 +271,11 @@
                     {:net program-net-input
                      :seed [:runtime/block (:order block) (:epoch block)]
                      :reuse-existing-bindings? true})
-          program-net (nb/run-propagators (:net compiled) (:props compiled))]
+          [state program-net] (temperature/run-propagators
+                               state
+                               :propagation/effect-only-compile
+                               (:net compiled)
+                               (:props compiled))]
       (-> state
           (assoc :program/net program-net
                  :program/env (:env compiled)

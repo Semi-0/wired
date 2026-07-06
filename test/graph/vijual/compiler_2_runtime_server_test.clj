@@ -3,9 +3,12 @@
             [charm.components.viewport :as viewport]
             [charm.message :as charm-msg]
             [charm.style.core :as style]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime-dashboard :as dashboard]
+            [graph.compiler-2-runtime.temperature-plot :as temperature-plot]
             [graph.compiler-2-runtime.tui-annotations :as tui-annotations]
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
@@ -292,6 +295,242 @@
                                     :value 3})
     (is (= 11 (get-in (runtime/read-tui-view @session {:client-id "A"})
                       [:blocks 6 :value])))))
+
+(deftest runtime-temperature-samples-widget-commit-propagation-and-effects
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(def-cells a out)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(-> (+ a 1) out)"})
+    (runtime/append-tui-block! session {:client-id "A"
+                                        :text "(io:slider-panel a)"})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "a"
+                                    :value 10})
+    (let [summary (runtime/summarize-temperature
+                   (get-in @session [:runtime :temperature :samples]))
+          phases (:phases summary)]
+      (is (pos? (:sample-count summary)))
+      (is (pos? (get-in phases [:commit/input :samples])))
+      (is (pos? (get-in phases [:commit/total :samples])))
+      (is (pos? (get-in phases [:propagation/program-updates :samples])))
+      (is (some? (get-in phases [:effects/boundary :queue/max]))))
+    (let [response (runtime/handle-command! session {:op :runtime/temperature})]
+      (is (:ok response))
+      (is (pos? (get-in response [:result :sample-count]))))))
+
+(deftest runtime-temperature-log-is-readable-and-bilingual
+  (let [line (#'server/temperature-log-line
+              {:sample-count 2
+               :phases {:commit/total
+                        {:samples 2
+                         :queue/avg 1.5
+                         :queue/p95 2
+                         :queue/max 2
+                         :ms/avg 3.25
+                         :ms/p95 4.0
+                         :ms/max 4.0}}})]
+    (is (str/includes? line "[runtime temperature]"))
+    (is (str/includes? line "[ランタイム温度]"))
+    (is (str/includes? line "[EN]"))
+    (is (str/includes? line "commit total"))
+    (is (str/includes? line "[JP]"))
+    (is (str/includes? line "コミット全体"))
+    (is (str/includes? line "queue(avg/p95/max)="))
+    (is (str/includes? line "キュー(平均/p95/最大)="))
+    (is (str/includes? line "\u001b[36m"))
+    (is (str/includes? line "\u001b[33m"))
+    (is (not (str/includes? line "meaning")))
+    (is (= 4 (count (str/split-lines line))))))
+
+(deftest temperature-plot-renders-annotation-sparkline-and-numbers
+  (let [panel (temperature-plot/phase-panel
+               {:label "commit total"
+                :queue [1 2 3 5 8]
+                :ms [2 2 4 6 10]})]
+    (is (str/includes? panel "commit total"))
+    (is (str/includes? panel "queue latest 8.0"))
+    (is (str/includes? panel "ms    latest 10.0"))
+    (is (str/includes? panel "queue trend low"))
+    (is (str/includes? panel "ms trend low"))
+    (is (= 5 (count (str/split-lines panel))))
+    (is (str/includes? panel "█"))))
+
+(deftest temperature-plot-renders-table-first
+  (let [panel (temperature-plot/history->panels
+               {:commit/total [{:queue/p95 8
+                                :queue/max 12
+                                :ms/p95 10
+                                :ms/max 13}]
+                :effects/boundary [{:queue/p95 0
+                                    :queue/max 0
+                                    :ms/p95 0
+                                    :ms/max 0}]}
+               name)]
+    (is (str/includes? panel "phase"))
+    (is (str/includes? panel "samples/s"))
+    (is (str/includes? panel "q p95"))
+    (is (str/includes? panel "ms p95"))
+    (is (str/includes? panel "total"))
+    (is (str/includes? panel "sample/s"))
+    (is (str/includes? panel "recent load trends"))))
+
+(deftest temperature-plot-buckets-runtime-rates-for-gnuplot
+  (let [samples [{:phase :commit/total :queued 1 :ms 1.0 :at 1000}
+                 {:phase :commit/input :queued 1 :ms 0.0 :at 1200}
+                 {:phase :propagation/program-updates :queued 5 :ms 4.0 :at 1500}
+                 {:phase :effects/boundary :queued 3 :ms 2.0 :at 1800}
+                 {:phase :xr/frame :queued 2 :ms 1.0 :at 1900}
+                 {:phase :commit/total :queued 1 :ms 1.0 :at 2500}]
+        rows (temperature-plot/rate-buckets samples 1000)
+        data (temperature-plot/rate-plot-data samples 1000)
+        script (temperature-plot/rate-plot-script {:samples samples
+                                                   :window-ms 1000
+                                                   :width 72
+                                                   :height 12})]
+    (is (= [{:second 0.0
+             :commit 0.002
+             :propagation 0.001
+             :effects 0.001
+             :xr 0.001}
+            {:second 1.0
+             :commit 0.001
+             :propagation 0.0
+             :effects 0.0
+             :xr 0.0}]
+           rows))
+    (is (str/includes? data "0.0 0.002 0.001 0.001 0.001"))
+    (is (str/includes? script "set terminal dumb 72 12"))
+    (is (str/includes? script "commit/ms"))
+    (is (str/includes? script "propagation/ms"))
+    (is (str/includes? script "effects/ms"))
+    (is (str/includes? script "xr runtime/ms"))))
+
+(deftest temperature-plot-text-fallback-renders-all-runtime-rates
+  (let [samples [{:phase :commit/total :queued 1 :ms 1.0 :at 1000}
+                 {:phase :propagation/program-updates :queued 5 :ms 4.0 :at 1200}
+                 {:phase :effects/boundary :queued 3 :ms 2.0 :at 1400}
+                 {:phase :xr/frame :queued 2 :ms 1.0 :at 1600}]
+        plot (temperature-plot/text-rate-plot {:samples samples
+                                               :window-ms 1000
+                                               :width 72})
+        pending (temperature-plot/text-rate-plot {:samples []
+                                                  :window-ms 1000
+                                                  :width 72})]
+    (doseq [label ["commit/ms"
+                   "propagation/ms"
+                   "effects/ms"
+                   "xr runtime/ms"]]
+      (is (str/includes? plot label))
+      (is (str/includes? pending label)))
+    (is (str/includes? plot "latest"))
+    (is (str/includes? plot "max"))))
+
+(deftest temperature-plot-gnuplot-output-names-the-renderer
+  (let [samples [{:phase :commit/total :queued 1 :ms 1.0 :at 1000}]
+        output (with-redefs [temperature-plot/gnuplot-command
+                             (constantly "/fake/gnuplot")
+                             shell/sh
+                             (fn [& _]
+                               {:exit 0
+                                :out "gnuplot plot\n"
+                                :err ""})]
+                 (temperature-plot/gnuplot-rate-plot {:samples samples
+                                                       :window-ms 1000
+                                                       :width 60
+                                                       :height 10}))]
+    (is (str/includes? output "gnuplot: /fake/gnuplot"))
+    (is (str/includes? output "gnuplot plot"))))
+
+(deftest server-dashboard-appends-zero-rows-for-inactive-phases
+  (let [history1 (#'dashboard/append-history
+                  {}
+                  {:sample-count 1
+                   :phases {:commit/total {:samples 1
+                                           :queue/p95 9
+                                           :queue/max 9
+                                           :ms/p95 4
+                                           :ms/max 4}}})
+        history2 (#'dashboard/append-history
+                  history1
+                  {:sample-count 0
+                   :phases {}})
+        commit-rows (:commit/total history2)
+        boundary-rows (:effects/boundary history2)]
+    (is (= [9 0] (mapv :queue/p95 commit-rows)))
+    (is (= [0 0] (mapv :queue/p95 boundary-rows)))))
+
+(deftest server-dashboard-renders-runtime-rates-before-phase-table
+  (let [content (with-redefs [temperature-plot/gnuplot-command
+                              (constantly nil)]
+                  (#'dashboard/temperature-content
+                   {:history {:commit/total [{:samples 1
+                                              :queue/p95 1
+                                              :queue/max 1
+                                              :ms/p95 2
+                                              :ms/max 2}]}
+                    :rate-history [{:second 0
+                                    :commit 0.001
+                                    :propagation 0.0
+                                    :effects 0.0
+                                    :xr 0.0}]
+                    :window-size {:width 80}}))]
+    (is (< (str/index-of content "runtime rates")
+           (str/index-of content "phase details")))
+    (is (not (str/includes? content "recent load trends")))))
+
+(deftest server-dashboard-retains-runtime-rate-history-across-quiet-ticks
+  (let [history1 (#'dashboard/append-rate-history
+                  []
+                  [{:phase :commit/total
+                    :queued 1
+                    :ms 2.0
+                    :at 1000}])
+        history2 (#'dashboard/append-rate-history history1 [])
+        plot (with-redefs [temperature-plot/gnuplot-command
+                           (constantly nil)]
+               (temperature-plot/gnuplot-rate-plot {:rows history2
+                                                     :window-ms 1000
+                                                     :width 72
+                                                     :height 10}))]
+    (is (= [0.001 0.0] (mapv :commit history2)))
+    (is (str/includes? plot "commit/ms"))
+    (is (str/includes? plot "latest 0.0"))
+    (is (str/includes? plot "max 0.001"))))
+
+(deftest server-dashboard-rate-history-x-axis-advances-after-cap
+  (let [history (reduce
+                 (fn [history _]
+                   (#'dashboard/append-rate-history history []))
+                 []
+                 (range 60))
+        seconds (mapv :second history)]
+    (is (= 48 (count history)))
+    (is (= (range 12 60) seconds))
+    (is (= 59 (:second (peek history))))))
+
+(deftest server-dashboard-sample-does-not-corrupt-empty-session
+  (let [session (runtime/new-session)]
+    (#'dashboard/sample session)
+    (let [registered (runtime/register-tui! session {:client-id "after-sample"})]
+      (is (= "after-sample" (:client-id registered)))
+      (is (some? (:network @session)))
+      (is (contains? (set (keys (:tuis @session))) "after-sample")))))
+
+(deftest server-dashboard-switches-between-multiple-views
+  (let [session (runtime/new-session)
+        server {:session session}
+        model (dashboard/init-model server)
+        [clients _] (dashboard/update-fn model (charm-msg/key-press "tab"))
+        [xr _] (dashboard/update-fn clients (charm-msg/key-press "tab"))
+        [temperature _] (dashboard/update-fn xr (charm-msg/key-press "tab"))]
+    (is (= :temperature (:view model)))
+    (is (= :clients (:view clients)))
+    (is (= :xr (:view xr)))
+    (is (= :temperature (:view temperature)))))
 
 (deftest tui-slider-panel-events-feed-default-arithmetic
   (let [session (runtime/new-session)]
@@ -911,6 +1150,16 @@
     (is (= "[1]> " (:prompt (:input refreshed))))
     (is (not (str/includes? rendered ":bool4/nothing")))
     (is (str/includes? rendered "[1]> "))))
+
+(deftest charm-tui-poll-auto-registers-missing-client
+  (let [{:keys [port close session]} (server/start-server 0)]
+    (try
+      (let [response (tui/poll-view server/default-host port "auto-tui")]
+        (is (:ok response))
+        (is (= "auto-tui" (get-in response [:result :client-id])))
+        (is (contains? (set (keys (:tuis @session))) "auto-tui")))
+      (finally
+        (close)))))
 
 (deftest charm-tui-submit-creates-next-target-before-compiling
   (let [{:keys [port close]} (server/start-server 0)]

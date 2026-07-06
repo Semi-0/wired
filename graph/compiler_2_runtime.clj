@@ -6,12 +6,14 @@
             [graph.compiler-2-runtime.input :as input]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-runtime.trace-session :as trace-session]
             [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
             [graph.compiler-2-runtime.xr-projection :as xr-projection]))
 
 (def new-session state/new-session)
+(def ensure-session-state! state/ensure-session-state!)
 (def default-xr-client-id state/default-xr-client-id)
 (def compile-source! program/compile-source!)
 (def list-cells cells/list-cells)
@@ -27,6 +29,8 @@
 (def stop-installed-trace! trace-session/stop-installed-trace!)
 (def schedule-trace-refreshes! trace-subscriptions/schedule-refreshes!)
 (def refresh-trace-subscriptions! trace-subscriptions/refresh-now!)
+(def summarize-temperature temperature/summarize)
+(def drain-temperature! temperature/drain-summary!)
 (def register-tui! tui-session/register-tui!)
 
 (defn- with-trace-refresh!

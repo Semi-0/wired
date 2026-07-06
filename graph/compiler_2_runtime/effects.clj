@@ -4,6 +4,7 @@
             [graph.compiler-2-runtime.boundary :as boundary]
             [graph.compiler-2-runtime.graph-projection :as graphp]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.core :as core]
@@ -43,8 +44,11 @@
           state
           (let [[tasks n1] (core/eval-cells [(message (:text-id block) payload)]
                                             (:network state))
-                n2 (core/run-tasks tasks n1)]
-            (assoc state :network n2)))))))
+                [state' n2] (temperature/run-tasks state
+                                                   :effects/tui-write-block
+                                                   tasks
+                                                   n1)]
+            (assoc state' :network n2)))))))
 
 (defn outbox-effects
   [program-net]
@@ -126,8 +130,11 @@
   (let [update (display-behavior-update (:display-id block) tick payload)
         [tasks n1] (core/eval-cells [(message (:display-id block) update)]
                                     (:network state))
-        n2 (core/run-tasks tasks n1)]
-    (assoc state :network n2)))
+        [state' n2] (temperature/run-tasks state
+                                           :effects/tui-write-display
+                                           tasks
+                                           n1)]
+    (assoc state' :network n2)))
 
 (defn record-tui-display
   [state request]
@@ -224,16 +231,22 @@
 
 (defn perform-boundary-effects
   [state]
-  (reduce (fn [s request]
-            (case [(:boundary/port request) (:boundary/kind request)]
-              [:xr :xr/launch-trace] (record-xr-launch s request)
-              [:xr :xr/trace-subscribe] (record-trace-subscription s request)
-              [:xr :xr/widget-register] (record-widget-register s request)
-              [:tui :tui/write-block] (record-tui-write s request)
-              [:tui :tui/write-display] (record-tui-display s request)
-              s))
-          state
-          (collapse-boundary-effects (outbox-effects (:program/net state)))))
+  (let [started (System/nanoTime)
+        requests (collapse-boundary-effects (outbox-effects (:program/net state)))
+        state' (reduce (fn [s request]
+                         (case [(:boundary/port request) (:boundary/kind request)]
+                           [:xr :xr/launch-trace] (record-xr-launch s request)
+                           [:xr :xr/trace-subscribe] (record-trace-subscription s request)
+                           [:xr :xr/widget-register] (record-widget-register s request)
+                           [:tui :tui/write-block] (record-tui-write s request)
+                           [:tui :tui/write-display] (record-tui-display s request)
+                           s))
+                       state
+                       requests)]
+    (temperature/record state'
+                        :effects/boundary
+                        (count requests)
+                        (temperature/elapsed-ms started))))
 
 (defn refresh-program-graph
   [state]

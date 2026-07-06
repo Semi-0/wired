@@ -166,7 +166,16 @@
 
 (defn poll-view
   [host port client-id]
-  (server/request host port {:op :tui/read-view :client-id client-id}))
+  (let [response (server/request host port {:op :tui/read-view
+                                            :client-id client-id})]
+    (if (and (not (:ok response))
+             (#{"tui client not found"
+                "no compiled source in runtime session"}
+              (:error response)))
+      (do
+        (server/request host port {:op :tui/register :client-id client-id})
+        (server/request host port {:op :tui/read-view :client-id client-id}))
+      response)))
 
 (defn init-model
   [{:keys [host port client-id poll-ms]
@@ -279,7 +288,12 @@
          port server/default-port
          client-id "tui-1"
          poll-ms 1000}}]
-  (server/request host port {:op :tui/register :client-id client-id})
+  (let [registered (server/request host port {:op :tui/register
+                                              :client-id client-id})]
+    (when-not (:ok registered)
+      (throw (ex-info "failed to register TUI client"
+                      {:client-id client-id
+                       :response registered}))))
   (try
     (let [model (init-model {:host host
                              :port port
@@ -288,7 +302,7 @@
       (program/run {:init (fn [] [model (refresh-cmd (assoc model :poll-ms 0))])
                     :update update-fn
                     :view view
-                    :alt-screen true}))
+                    :alt-screen false}))
     (finally
       (server/request host port {:op :tui/unregister :client-id client-id}))))
 

@@ -5,6 +5,7 @@
             [graph.compiler-2-runtime.input :as input]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-runtime.tui-annotations :as annotations]
             [propagators.cells.value :as value]
             [propagators.core :as core]
@@ -111,13 +112,17 @@
                    (:tail-id tui) (conj (message (:next-id (peek (:blocks tui)))
                                                  (:block-id block))))
         [tasks n2] (core/eval-cells messages n1)
-        n3 (core/run-tasks tasks n2)
+        [state' n3] (temperature/run-tasks state
+                                           :propagation/tui-append
+                                           tasks
+                                           n2)
         tui' (-> tui
                  (assoc :head-id (or (:head-id tui) (:block-id block))
                         :tail-id (:block-id block))
                  (update :next-index inc)
                  (update :blocks conj block))]
     (swap! session #(-> %
+                        (merge (select-keys state' [:runtime]))
                         (assoc :network n3)
                         (assoc-in [:tuis client-id] tui')))
     (seed-appended-block-topology! session client-id
@@ -231,8 +236,13 @@
                              :text-current-source? true))
           [tasks n1] (core/eval-cells [(message (:text-id block) text)]
                                       (:network @session))
-          n2 (core/run-tasks tasks n1)]
-      (swap! session assoc :network n2)
+          [state' n2] (temperature/run-tasks @session
+                                             :propagation/tui-edit
+                                             tasks
+                                             n1)]
+      (swap! session #(-> %
+                          (merge (select-keys state' [:runtime]))
+                          (assoc :network n2)))
       (when-not (some? (:order block))
         (swap! session assign-source-order client-id index))
       (rebuild-program! session)

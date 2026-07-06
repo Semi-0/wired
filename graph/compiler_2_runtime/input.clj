@@ -6,6 +6,7 @@
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.program-rebuild :as program-rebuild]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [propagators.core :as core]
             [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]
@@ -87,9 +88,12 @@
                             (message cell-id update))
                           updates)
                     n0)
-        n2 (core/run-tasks tasks n1)
+        [state' n2] (temperature/run-tasks state
+                                           :propagation/program-updates
+                                           tasks
+                                           n1)
         n3 (settle-application-props n2 [])]
-    (assoc state :program/net n3)))
+    (assoc state' :program/net n3)))
 
 (defn changed-candidate-cells
   [program-net updates]
@@ -140,100 +144,103 @@
 (defn commit-runtime-input
   "Commit an external cell message into the runtime model, then propagate/effect."
   [state input]
-  (let [tick (or (:runtime/commit-tick input)
+  (let [started (System/nanoTime)
+        tick (or (:runtime/commit-tick input)
                  (next-runtime-commit-tick state))
         input (assoc input :runtime/commit-tick tick)
         state (-> state
                   (assoc :runtime/commit-tick tick)
-                  (assoc-program-commit-tick tick))]
-    (case (:runtime/input input)
-    (:cell-message :xr/message)
-    (let [before-net (:program/net state)
-          cell-id (:cell-id input)
-          update-value (:update input)
-          candidates (changed-candidate-cells before-net
-                                              [{:cell-id cell-id}])
-          n3 (:program/net
-              (apply-program-updates state [{:cell-id cell-id
-                                             :update update-value}]))]
-      (-> state
-          (assoc :program/net n3)
-          (assoc :runtime/changed-candidate-cells candidates)
-          (update :runtime/inputs (fnil conj []) input)
-          runtime-cycle-for-input
-          (record-runtime-transaction before-net)))
+                  (assoc-program-commit-tick tick)
+                  (temperature/record :commit/input 1 0.0))
+        state'
+        (case (:runtime/input input)
+          (:cell-message :xr/message)
+          (let [before-net (:program/net state)
+                cell-id (:cell-id input)
+                update-value (:update input)
+                candidates (changed-candidate-cells before-net
+                                                    [{:cell-id cell-id}])
+                state* (apply-program-updates state [{:cell-id cell-id
+                                                      :update update-value}])]
+            (-> state*
+                (assoc :runtime/changed-candidate-cells candidates)
+                (update :runtime/inputs (fnil conj []) input)
+                runtime-cycle-for-input
+                (record-runtime-transaction before-net)))
 
       :xr/widget-event
-    (let [before-net (:program/net state)
-          widget-id (str (:widget-id input))
-          channel (str (or (:channel input) "value"))
-          _widget-channel (widget-channel state widget-id channel)
-          epoch (next-widget-epoch state widget-id)
-          latest-values (assoc (get-in state [:xr :widget-latest widget-id] {})
-                               channel
-                               (:value input))
-          channels (get-in state [:xr :widgets widget-id :channels])
-          updates (vec
-                   (keep (fn [[channel-name channel-info]]
-                           (when (contains? latest-values channel-name)
-                             {:channel channel-name
-                              :cell-id (:event-cell channel-info)
-                              :value (get latest-values channel-name)
-                              :update (event/active-event
-                                       (:event-cell channel-info)
-                                       widget-id
-                                       epoch
-                                       (get latest-values channel-name))}))
-                         channels))
-          candidates (changed-candidate-cells before-net updates)
-          n3 (:program/net (apply-program-updates state updates))]
-      (-> state
-          (assoc :program/net n3)
-          (assoc :runtime/changed-candidate-cells candidates)
-          (assoc-in [:xr :widget-epochs widget-id] epoch)
-          (assoc-in [:xr :widget-latest widget-id] latest-values)
-          (update :runtime/inputs (fnil conj [])
-                  (assoc input
-                         :runtime/input :xr/widget-event
-                         :widget-id widget-id
-                         :channel channel
-                         :epoch epoch
-                         :updates updates))
-          runtime-cycle-for-input
-          (annotate-widget-cell-values widget-id)
-          (record-runtime-transaction before-net)))
+          (let [before-net (:program/net state)
+                widget-id (str (:widget-id input))
+                channel (str (or (:channel input) "value"))
+                _widget-channel (widget-channel state widget-id channel)
+                epoch (next-widget-epoch state widget-id)
+                latest-values (assoc (get-in state [:xr :widget-latest widget-id] {})
+                                     channel
+                                     (:value input))
+                channels (get-in state [:xr :widgets widget-id :channels])
+                updates (vec
+                         (keep (fn [[channel-name channel-info]]
+                                 (when (contains? latest-values channel-name)
+                                   {:channel channel-name
+                                    :cell-id (:event-cell channel-info)
+                                    :value (get latest-values channel-name)
+                                    :update (event/active-event
+                                             (:event-cell channel-info)
+                                             widget-id
+                                             epoch
+                                             (get latest-values channel-name))}))
+                               channels))
+                candidates (changed-candidate-cells before-net updates)
+                state* (apply-program-updates state updates)]
+            (-> state*
+                (assoc :runtime/changed-candidate-cells candidates)
+                (assoc-in [:xr :widget-epochs widget-id] epoch)
+                (assoc-in [:xr :widget-latest widget-id] latest-values)
+                (update :runtime/inputs (fnil conj [])
+                        (assoc input
+                               :runtime/input :xr/widget-event
+                               :widget-id widget-id
+                               :channel channel
+                               :epoch epoch
+                               :updates updates))
+                runtime-cycle-for-input
+                (annotate-widget-cell-values widget-id)
+                (record-runtime-transaction before-net)))
 
     :xr/widget-retraction
-    (let [before-net (:program/net state)
-          widget-id (str (:widget-id input))
-          channel (str (or (:channel input) "value"))
-          channel-info (widget-channel state widget-id channel)
-          epoch (next-widget-epoch state widget-id)
-          update {:channel channel
-                  :cell-id (:event-cell channel-info)
-                  :update (event/retraction-event
-                           (:event-cell channel-info)
-                           widget-id
-                           epoch)}
-          candidates (changed-candidate-cells before-net [update])
-          n3 (:program/net (apply-program-updates state [update]))]
-      (-> state
-          (assoc :program/net n3)
-          (assoc :runtime/changed-candidate-cells candidates)
-          (assoc-in [:xr :widget-epochs widget-id] epoch)
-          (update-in [:xr :widget-latest widget-id] dissoc channel)
-          (update :runtime/inputs (fnil conj [])
-                  (assoc input
-                         :runtime/input :xr/widget-retraction
-                         :widget-id widget-id
-                         :channel channel
-                         :epoch epoch
-                         :updates [update]))
-          runtime-cycle-for-input
-          (annotate-widget-cell-values widget-id)
-          (record-runtime-transaction before-net)))
+          (let [before-net (:program/net state)
+                widget-id (str (:widget-id input))
+                channel (str (or (:channel input) "value"))
+                channel-info (widget-channel state widget-id channel)
+                epoch (next-widget-epoch state widget-id)
+                update {:channel channel
+                        :cell-id (:event-cell channel-info)
+                        :update (event/retraction-event
+                                 (:event-cell channel-info)
+                                 widget-id
+                                 epoch)}
+                candidates (changed-candidate-cells before-net [update])
+                state* (apply-program-updates state [update])]
+            (-> state*
+                (assoc :runtime/changed-candidate-cells candidates)
+                (assoc-in [:xr :widget-epochs widget-id] epoch)
+                (update-in [:xr :widget-latest widget-id] dissoc channel)
+                (update :runtime/inputs (fnil conj [])
+                        (assoc input
+                               :runtime/input :xr/widget-retraction
+                               :widget-id widget-id
+                               :channel channel
+                               :epoch epoch
+                               :updates [update]))
+                runtime-cycle-for-input
+                (annotate-widget-cell-values widget-id)
+                (record-runtime-transaction before-net)))
 
-      (throw (ex-info "unsupported runtime input" {:input input})))))
+          (throw (ex-info "unsupported runtime input" {:input input})))]
+    (temperature/record state'
+                        :commit/total
+                        1
+                        (temperature/elapsed-ms started))))
 
 (defn commit-runtime-input!
   [session input]

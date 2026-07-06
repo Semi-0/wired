@@ -52,6 +52,20 @@ const assertWidgetState = (model, current, epoch) => {
   assert.deepEqual(graphWidgetChannel(model), channel(current, epoch));
 };
 
+const runEffects = (effects, env) => {
+  for (const effect of effects) {
+    effect.run(() => {}, env);
+  }
+};
+
+const step = (model, msg, env) => {
+  const [next, effects] = update(model, msg);
+  runEffects(effects, env);
+  return next;
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 test("stale server widget payload does not snap local slider value back", () => {
   const registered = dispatch(initialModel(), {
     type: "socket/message",
@@ -84,4 +98,36 @@ test("stale server widget payload does not snap local slider value back", () => 
     payload: graphPayload(50, 3),
   });
   assertWidgetState(newerServerValue, 50, 3);
+});
+
+test("rapid slider inputs coalesce to the latest runtime command", async () => {
+  const sent = [];
+  const env = {
+    socket: {
+      readyState: 1,
+      send: (payload) => sent.push(JSON.parse(payload)),
+    },
+  };
+  let model = dispatch(initialModel(), {
+    type: "socket/message",
+    payload: graphPayload(10, 1),
+  });
+
+  model = step(model, { type: "widget/input", widgetId, channel: "a", value: 20 }, env);
+  model = step(model, { type: "widget/input", widgetId, channel: "a", value: 30 }, env);
+  model = step(model, { type: "widget/input", widgetId, channel: "a", value: 40 }, env);
+
+  assertWidgetState(model, 40, 4);
+  assert.deepEqual(sent, []);
+
+  await sleep(70);
+
+  assert.deepEqual(sent, [
+    {
+      op: "xr/widget-event",
+      "widget-id": widgetId,
+      channel: "a",
+      value: 40,
+    },
+  ]);
 });

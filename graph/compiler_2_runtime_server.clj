@@ -19,6 +19,8 @@
 (def default-port 45555)
 (def default-udp-port default-port)
 (def ^:private max-udp-packet-size 65507)
+(def ^:private temperature-log-interval-ms 5000)
+(def ^:dynamic *temperature-logger-enabled?* true)
 
 (defn- write-edn-line
   [writer value]
@@ -165,6 +167,117 @@
               (.close socket)
               (.interrupt ^Thread loop-thread))}))
 
+(defn- round1
+  [x]
+  (when (number? x)
+    (/ (Math/round (* 10.0 (double x))) 10.0)))
+
+(def ^:private ansi-reset "\u001b[0m")
+(def ^:private ansi-dim "\u001b[2m")
+(def ^:private ansi-cyan "\u001b[36m")
+(def ^:private ansi-green "\u001b[32m")
+(def ^:private ansi-yellow "\u001b[33m")
+
+(defn- color
+  [ansi text]
+  (str ansi text ansi-reset))
+
+(defn- temperature-window-seconds
+  []
+  (round1 (/ temperature-log-interval-ms 1000.0)))
+
+(defn- phase-label
+  [phase]
+  (case phase
+    :commit/input "commit input / 入力コミット"
+    :commit/total "commit total / コミット全体"
+    :effects/boundary "boundary effects / 境界エフェクト"
+    :effects/tui-write-block "TUI block write effect / TUI ブロック書き込みエフェクト"
+    :effects/tui-write-display "TUI display write effect / TUI 表示書き込みエフェクト"
+    :propagation/compile-topology "compile topology propagation / トポロジコンパイル伝播"
+    :propagation/effect-only-compile "effect-only compile propagation / エフェクト専用コンパイル伝播"
+    :propagation/program-updates "program update propagation / プログラム更新伝播"
+    :propagation/publish-graph "graph publish propagation / グラフ公開伝播"
+    :propagation/tui-append "TUI append propagation / TUI 追加伝播"
+    :propagation/tui-edit "TUI edit propagation / TUI 編集伝播"
+    :propagation/trace-install "trace install propagation / トレース導入伝播"
+    :propagation/trace-tick "trace tick propagation / トレース更新伝播"
+    (str phase " / 未分類フェーズ")))
+
+(defn- english-label
+  [phase]
+  (first (str/split (phase-label phase) #" / ")))
+
+(defn- japanese-label
+  [phase]
+  (second (str/split (phase-label phase) #" / ")))
+
+(defn- stat-triple
+  [stats prefix]
+  (color ansi-yellow
+         (str (round1 (get stats (keyword (name prefix) "avg")))
+              "/"
+              (round1 (get stats (keyword (name prefix) "p95")))
+              "/"
+              (round1 (get stats (keyword (name prefix) "max"))))))
+
+(defn- phase-temperature-block
+  [phase stats]
+  (let [samples (color ansi-green (:samples stats))
+        queue (stat-triple stats :queue)
+        ms (stat-triple stats :ms)
+        id (color ansi-dim phase)]
+    (str (color ansi-cyan "[EN]") " " (english-label phase)
+         " " id
+         " samples=" samples
+         " queue(avg/p95/max)=" queue
+         " ms(avg/p95/max)=" ms
+         "\n"
+         (color ansi-cyan "[JP]") " " (japanese-label phase)
+         " " id
+         " サンプル=" samples
+         " キュー(平均/p95/最大)=" queue
+         " 時間ms(平均/p95/最大)=" ms)))
+
+(defn- temperature-log-line
+  [summary]
+  (let [phases (:phases summary)]
+    (when (seq phases)
+      (str (color ansi-cyan "[runtime temperature]")
+           " window=" (color ansi-green (str (temperature-window-seconds) "s"))
+           " samples=" (color ansi-green (:sample-count summary)) "\n"
+           (color ansi-cyan "[ランタイム温度]")
+           " 集計=" (color ansi-green (str (temperature-window-seconds) "秒"))
+           " サンプル=" (color ansi-green (:sample-count summary)) "\n"
+           (str/join "\n"
+                     (map (fn [[phase stats]]
+                            (phase-temperature-block phase stats))
+                          (sort-by (comp name key) phases)))))))
+
+(defn- start-temperature-logger
+  [server-state]
+  (if-not *temperature-logger-enabled?*
+    {:close (fn [] nil)}
+    (let [running? (atom true)
+          loop-thread
+          (daemon-thread
+           "compiler-2-runtime-temperature"
+           (fn []
+             (while @running?
+               (try
+                 (Thread/sleep temperature-log-interval-ms)
+                 (when-let [line (temperature-log-line
+                                  (runtime/drain-temperature!
+                                   (:session server-state)))]
+                   (println line))
+                 (catch InterruptedException _ nil)
+                 (catch Throwable t
+                   (println (str "[runtime-temperature] error: "
+                                 (ex-message t))))))))]
+      {:close (fn []
+                (reset! running? false)
+                (.interrupt ^Thread loop-thread))})))
+
 (defn start-server
   ([] (start-server default-port))
   ([port] (start-server port xr-server/default-port))
@@ -177,6 +290,7 @@
                        :xr-port xr-port}
          server (ServerSocket. port 50 (java.net.InetAddress/getByName default-host))
          udp (start-udp-server server-state udp-port)
+         temperature (start-temperature-logger server-state)
          running? (atom true)
          accept-loop
          (daemon-thread
@@ -197,6 +311,7 @@
                (reset! running? false)
                (when-let [xr (:server @xr-state)]
                  ((:close xr)))
+               ((:close temperature))
                ((:close udp))
                (.close server)
                (.interrupt ^Thread accept-loop))})))
@@ -259,6 +374,7 @@
          opts {:port default-port
                :xr? false
                :xr-port xr-server/default-port
+               :dashboard? true
                :udp-port default-udp-port}]
     (if-let [arg (first args)]
       (case arg
@@ -267,6 +383,12 @@
 
         ("--no-xr")
         (recur (next args) (assoc opts :xr? false))
+
+        ("--dashboard")
+        (recur (next args) (assoc opts :dashboard? true))
+
+        ("--no-dashboard")
+        (recur (next args) (assoc opts :dashboard? false))
 
         ("--xr-port" "-xr-port")
         (recur (nnext args)
@@ -336,16 +458,28 @@
       (println (str "XR runtime on http://" xr-server/default-host ":"
                     (:port xr) "/")))))
 
+(defn- run-server-dashboard
+  [server]
+  ((requiring-resolve 'graph.compiler-2-runtime-dashboard/run-dashboard)
+   server))
+
 (defn -main
   [& args]
   (case (first args)
     "server"
-    (let [{:keys [port xr? xr-port udp-port]} (parse-server-args (next args))
-          server (if xr?
-                   (start-server-with-xr port xr-port udp-port)
-                   (start-server port xr-port udp-port))]
+    (let [{:keys [port xr? xr-port udp-port dashboard?]}
+          (parse-server-args (next args))
+          server (binding [*temperature-logger-enabled?* (not dashboard?)]
+                   (if xr?
+                     (start-server-with-xr port xr-port udp-port)
+                     (start-server port xr-port udp-port)))]
       (print-launch-banner server)
-      @(promise))
+      (if dashboard?
+        (try
+          (run-server-dashboard server)
+          (finally
+            ((:close server))))
+        @(promise)))
 
     "request"
     (let [[_ port source] args]
@@ -373,4 +507,4 @@
         (semantic-repl/print-graph (:result response))
         (prn response)))
 
-    (println "usage: server [port] [--xr] [--xr-port <port>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | graph <port> | trace <port> <label>")))
+    (println "usage: server [port] [--xr] [--no-dashboard] [--xr-port <port>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | graph <port> | trace <port> <label>")))

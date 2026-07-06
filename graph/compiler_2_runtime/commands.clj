@@ -4,6 +4,7 @@
             [graph.compiler-2-runtime.input :as input]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
+            [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-runtime.trace-session :as trace-session]
             [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
@@ -29,6 +30,7 @@
 (def stop-installed-trace! trace-session/stop-installed-trace!)
 (def schedule-trace-refreshes! trace-subscriptions/schedule-refreshes!)
 (def read-xr-effects xr-projection/read-xr-effects)
+(def summarize-temperature temperature/summarize)
 
 (defn handle-command!
   [session {:keys [op source] :as command}]
@@ -56,6 +58,9 @@
                         :semantic/trace/read (read-installed-trace @session command)
                         :semantic/trace/stop (stop-installed-trace! session command)
                         :xr/effects (read-xr-effects @session)
+                        :runtime/temperature
+                        (summarize-temperature
+                         (get-in @session [:runtime :temperature :samples]))
                         (throw (ex-info "unknown runtime op" {:op op})))})]
       (schedule-trace-refreshes! session)
       response)

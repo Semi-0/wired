@@ -1,4 +1,4 @@
-import { batch, none, runtimeCommand } from "./combinators.js";
+import { batch, coalescedRuntimeCommand, none, runtimeCommand } from "./combinators.js";
 import { enterXrEffect } from "./effects.js";
 import { graphWithWidgets, reconcileLayout, stepForceLayout, widgetsFromGraph } from "./model.js";
 
@@ -198,14 +198,19 @@ export const update = (model, msg) => {
         const widgets = setWidgetChannelValue(model.widgets, msg.widgetId, msg.channel, msg.value);
         const epoch = channelEpoch(widgetChannel(widgets, msg.widgetId, msg.channel));
         const graph = graphWithWidgetValue(model.graph, msg.widgetId, msg.channel, msg.value, epoch);
+        const key = `widget/input:${msg.widgetId}:${msg.channel}`;
         return [
           { ...model, widgets, graph, status: `slider ${msg.widgetId}/${msg.channel}: ${msg.value}` },
           [
-            runtimeCommand("xr/widget-event", {
-              "widget-id": msg.widgetId,
-              channel: msg.channel,
-              value: msg.value,
-            }),
+            coalescedRuntimeCommand(
+              key,
+              "xr/widget-event",
+              {
+                "widget-id": msg.widgetId,
+                channel: msg.channel,
+                value: msg.value,
+              }
+            ),
           ],
         ];
       }
