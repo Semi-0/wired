@@ -205,6 +205,21 @@
     (is (str/includes? rendered "a"))
     (is (str/includes? rendered "b"))))
 
+(deftest tui-renderer-coalesces-semantic-trace-aliases
+  (let [graph {:semantic-trace/graph true
+               :nodes {:semantic-d "d"
+                       :structural-d "cell"
+                       :plus "+"
+                       :arrow "->"}
+               :node-aliases {:runtime-d #{:semantic-d :structural-d}}
+               :edges [[:plus :structural-d]
+                       [:structural-d :arrow]
+                       [:arrow :semantic-d]]}
+        coalesced (#'tui/canonicalize-render-graph graph)]
+    (is (= 1 (count (filter #(= "d" %) (vals (:nodes coalesced))))))
+    (is (not-any? #(= "cell" %) (vals (:nodes coalesced))))
+    (is (not-any? (fn [[from to]] (= from to)) (:edges coalesced)))))
+
 (deftest block-target-expression-writes-future-block
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
@@ -945,6 +960,26 @@
       (is (contains? edges ["-" "2"]))
       (is (contains? edges ["2" "<->"]))
       (is (contains? edges ["<->" "a"])))))
+
+(deftest terminal-trace-coalesces-aliased-target-cell
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [text ["(def-cells a b c d)"
+                  "(-> (- (+ a c) b) d)"
+                  "(def-cell g)"
+                  "(trace d g)"
+                  "(-> g (block 5))"]]
+      (runtime/append-tui-block! session {:client-id "A"
+                                          :text text}))
+    (let [view (runtime/read-tui-view @session {:client-id "A"})
+          trace (get-in view [:blocks 5 :value])
+          coalesced (#'tui/canonicalize-render-graph trace)
+          d-nodes (filter #(= "d" %) (vals (:nodes coalesced)))
+          rendered (tui/render-value trace)]
+      (is (tui/graph-value? trace))
+      (is (= 1 (count d-nodes)))
+      (is (not (str/includes? rendered "graph render error")))
+      (is (str/includes? rendered "| d |")))))
 
 (deftest trace-graph-output-does-not-stall-later-tui-updates
   (let [session (runtime/new-session)]

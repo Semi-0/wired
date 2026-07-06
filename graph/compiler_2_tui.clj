@@ -25,6 +25,68 @@
     (pos? (long (or height 0)))
     (assoc :stress-grid-height (max 1 (quot (long height) 7)))))
 
+(defn- alias-node-set
+  [v]
+  (cond
+    (nil? v) #{}
+    (set? v) v
+    (sequential? v) (set v)
+    :else #{v}))
+
+(defn- edge-pair?
+  [edge]
+  (and (vector? edge) (= 2 (count edge))))
+
+(defn- label-rank
+  [label]
+  (cond
+    (or (nil? label) (= "cell" (str label))) 3
+    (str/starts-with? (str label) "cell") 2
+    (str/starts-with? (str label) "slot ") 2
+    :else 0))
+
+(defn- better-label
+  [old new]
+  (if (<= (label-rank new) (label-rank old))
+    new
+    old))
+
+(defn- canonical-node
+  [nodes values node-ids]
+  (first
+   (sort-by (fn [id]
+              [(if (contains? values id) 0 1)
+               (label-rank (get nodes id))
+               (pr-str id)])
+            node-ids)))
+
+(defn- canonicalize-render-graph
+  [{:keys [nodes node-aliases values edges] :as graph}]
+  (let [groups (->> (vals node-aliases)
+                    (map alias-node-set)
+                    (filter #(<= 2 (count %))))
+        replacements (reduce
+                      (fn [replacements group]
+                        (let [canonical (canonical-node nodes values group)]
+                          (reduce #(assoc %1 %2 canonical)
+                                  replacements
+                                  group)))
+                      {}
+                      groups)
+        canonical (fn [node-id] (get replacements node-id node-id))
+        nodes* (reduce (fn [m [id label]]
+                         (update m (canonical id) better-label label))
+                       {}
+                       nodes)
+        edges* (vec (distinct
+                     (keep (fn [[from to]]
+                             (let [from* (canonical from)
+                                   to* (canonical to)]
+                               (when (not= from* to*)
+                                 [from* to*])))
+                           (filter edge-pair? edges))))]
+    (assoc graph :nodes nodes* :edges edges*)))
+
 (defn- normalize-render-graph
   [{:keys [nodes edges] :as graph}]
   (let [ids (->> (concat (keys nodes) (mapcat identity edges))
@@ -48,7 +110,9 @@
   ([value viewport-size]
    (if (graph-value? value)
      (try
-       (let [{:keys [edges nodes]} (normalize-render-graph value)]
+       (let [{:keys [edges nodes]} (-> value
+                                       canonicalize-render-graph
+                                       normalize-render-graph)]
          (with-out-str
            (v/draw-stress-directed-graph edges
                                          nodes

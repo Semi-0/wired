@@ -37,6 +37,13 @@
                (some? %) #{%}
                :else #{}))
            (keep (:nodes graph))
+           (sort-by (fn [label]
+                      [(cond
+                         (or (nil? label) (= "cell" (str label))) 3
+                         (.startsWith (str label) "cell") 2
+                         (.startsWith (str label) "slot ") 2
+                         :else 0)
+                       (str label)]))
            first))
 
 (defn- trace-request-source
