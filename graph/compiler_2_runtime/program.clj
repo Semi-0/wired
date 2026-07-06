@@ -206,6 +206,9 @@
     (cenv/bind-at env 'io:slider-panel
                   (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
                   0)
+    (cenv/bind-at env 'io:slider-panels
+                  (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
+                  0)
     (cenv/bind-at env 'io:slider-panel-name
                   (runtime-widget/io-slider-panel-name-operator (boundary-outbox-id))
                   0)

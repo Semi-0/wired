@@ -5,6 +5,7 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace]))
@@ -17,21 +18,32 @@
   (or (:program/epoch (net/net-dict-or-empty network))
       0))
 
+(defn- explicit-request-source?
+  [source-value]
+  (or (symbol? source-value)
+      (string? source-value)
+      (seq? source-value)
+      (and (map? source-value)
+           (not (net/network? source-value))
+           (not (event/event-projection? source-value))
+           (not (semantic-trace/semantic-trace-graph? source-value)))))
+
+(defn- graph-label-for-cell
+  [graph source-id]
+  (some->> (get-in graph [:node-aliases source-id])
+           (#(cond
+               (set? %) %
+               (sequential? %) (set %)
+               (some? %) #{%}
+               :else #{}))
+           (keep (:nodes graph))
+           first))
+
 (defn- trace-request-source
   [graph source-id source-value direction]
-  (if (or (symbol? source-value)
-          (string? source-value)
-          (map? source-value)
-          (seq? source-value))
+  (if (explicit-request-source? source-value)
     (semantic-trace/trace-request source-value direction)
-    (if-let [label (some->> (get-in graph [:node-aliases source-id])
-                            (#(cond
-                                (set? %) %
-                                (sequential? %) (set %)
-                                (some? %) #{%}
-                                :else #{}))
-                            (keep (:nodes graph))
-                            first)]
+    (if-let [label (graph-label-for-cell graph source-id)]
       (semantic-trace/trace-request label direction)
       {:node source-id :direction direction})))
 

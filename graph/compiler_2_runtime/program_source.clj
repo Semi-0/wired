@@ -25,7 +25,7 @@
                 <-> -> block block-at be:block be:block-at translate
                 xr-io io:xr
                 slider-io slider-panel-io io:slider io:slider-panel
-                io:slider-panel-name
+                io:slider-panels io:slider-panel-name
                 behavior behavior-cell}
              (top-level-form-head source)))
 
@@ -39,6 +39,7 @@
   (let [source (str/replace source
                             #"\(\s*::(?=\s)"
                             (str "(" compiler-parser/network-marker))
+        source (str/replace source #"(?<=\(|\s)be:/" "be:divide")
         reader (PushbackReader. (StringReader. source))]
     (loop [forms []]
       (let [form (edn/read {:eof source-reader-eof} reader)]

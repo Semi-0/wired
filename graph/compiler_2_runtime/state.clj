@@ -50,6 +50,7 @@
   [n]
   (-> n
       (compile1/install-and-run (cell-protocol/install-cell-protocol))
+      (compile1/install-and-run (cell-protocol/install-event-protocol))
       (compile1/install-and-run (cell-protocol/install-behavior-protocol))
       (compile1/install-and-run (cell-protocol/install-tms-distributed-protocol))))
 

@@ -7,7 +7,7 @@
             [graph.compiler-2-runtime.program-rebuild :as program-rebuild]
             [graph.compiler-2-runtime.state :as state]
             [propagators.core :as core]
-            [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]))
@@ -104,7 +104,7 @@
       (:cell-message :xr/message)
       (apply-program-updates state [(select-keys input [:cell-id :update])])
 
-      :xr/widget-event
+      (:xr/widget-event :xr/widget-retraction)
       (replay-widget-updates state input)
 
       state)))
@@ -136,7 +136,7 @@
           run-runtime-cycle
           (record-runtime-transaction before-net)))
 
-    :xr/widget-event
+      :xr/widget-event
     (let [before-net (:program/net state)
           widget-id (str (:widget-id input))
           channel (str (or (:channel input) "value"))
@@ -152,8 +152,11 @@
                              {:channel channel-name
                               :cell-id (:event-cell channel-info)
                               :value (get latest-values channel-name)
-                              :update (obj/compound-object
-                                       {epoch (get latest-values channel-name)})}))
+                              :update (event/active-event
+                                       (:event-cell channel-info)
+                                       widget-id
+                                       epoch
+                                       (get latest-values channel-name))}))
                          channels))
           n3 (:program/net (apply-program-updates state updates))]
       (-> state
@@ -171,7 +174,35 @@
           (annotate-widget-cell-values widget-id)
           (record-runtime-transaction before-net)))
 
-    (throw (ex-info "unsupported runtime input" {:input input})))))
+    :xr/widget-retraction
+    (let [before-net (:program/net state)
+          widget-id (str (:widget-id input))
+          channel (str (or (:channel input) "value"))
+          channel-info (widget-channel state widget-id channel)
+          epoch (next-widget-epoch state widget-id)
+          update {:channel channel
+                  :cell-id (:event-cell channel-info)
+                  :update (event/retraction-event
+                           (:event-cell channel-info)
+                           widget-id
+                           epoch)}
+          n3 (:program/net (apply-program-updates state [update]))]
+      (-> state
+          (assoc :program/net n3)
+          (assoc-in [:xr :widget-epochs widget-id] epoch)
+          (update-in [:xr :widget-latest widget-id] dissoc channel)
+          (update :runtime/inputs (fnil conj [])
+                  (assoc input
+                         :runtime/input :xr/widget-retraction
+                         :widget-id widget-id
+                         :channel channel
+                         :epoch epoch
+                         :updates [update]))
+          run-runtime-cycle
+          (annotate-widget-cell-values widget-id)
+          (record-runtime-transaction before-net)))
+
+      (throw (ex-info "unsupported runtime input" {:input input})))))
 
 (defn commit-runtime-input!
   [session input]

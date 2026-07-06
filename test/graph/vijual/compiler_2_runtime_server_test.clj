@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime.tui-annotations :as tui-annotations]
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]
@@ -14,6 +15,7 @@
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -191,6 +193,15 @@
                              :annotation "[be:a @1]"}]})]
     (is (str/includes? rendered "9  [be:a @1]"))))
 
+(deftest tui-renders-graph-with-mixed-string-and-keyword-node-ids
+  (let [rendered (tui/render-value
+                  {:nodes {:a "a"
+                           "b" "b"}
+                   :edges [[:a "b"]]})]
+    (is (not (str/includes? rendered "graph render error")))
+    (is (str/includes? rendered "a"))
+    (is (str/includes? rendered "b"))))
+
 (deftest block-target-expression-writes-future-block
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
@@ -261,7 +272,7 @@
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(io:slider-panel a b c)"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(<-> (- (+ a b) c) out)"})
+                                        :text "(<-> (be:- (be:+ a b) c) out)"})
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> out (be:block 6))"})
     (runtime/commit-runtime-input! session
@@ -281,6 +292,72 @@
                                     :value 3})
     (is (= 11 (get-in (runtime/read-tui-view @session {:client-id "A"})
                       [:blocks 6 :value])))))
+
+(deftest tui-slider-panel-events-feed-default-arithmetic
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d)"
+                    "(-> (- (+ a c) b) d)"
+                    "(def-cell g)"
+                    "(trace d g)"
+                    "(io:xr g)"
+                    "(io:slider-panels a b c)"
+                    "(-> d (block 7))"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (doseq [[channel value] [["a" 10] ["b" 4] ["c" 3]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (let [d-id (cenv/binding-id (cenv/lookup (:program/env @session) 'd))
+          d-content (net/network-cell-content (:program/net @session) d-id)
+          annotations (tui-annotations/value-annotations d-content)]
+      (is (= [9] (vec (vals (event/active-values d-content)))))
+      (is (= 9 (tui-annotations/project-value d-content)))
+      (is (= :event (get-in annotations [0 :kind])))
+      (is (= 9 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                       [:blocks 7 :value]))))
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "a"
+                                    :value 11})
+    (let [d-id (cenv/binding-id (cenv/lookup (:program/env @session) 'd))
+          d-content (net/network-cell-content (:program/net @session) d-id)]
+      (is (= [10] (vec (vals (event/active-values d-content)))))
+      (is (= 10 (tui-annotations/project-value d-content)))
+      (let [block (get-in (runtime/read-tui-view @session {:client-id "A"})
+                          [:blocks 7])]
+        (is (= 10 (:value block)))
+        (is (str/includes? (:annotation block) "/slider-panel-0@4"))))))
+
+(deftest tui-annotations-compact-trace-and-derived-event-identities
+  (let [node-id (ids/new-node-id)
+        trace-label (tui-annotations/format-annotations
+                     [{:kind :behavior
+                       :identities [[:xr/trace-subscription
+                                     [:trace/subscribe
+                                      node-id
+                                      {:trace/target true
+                                       :trace/symbol "d"}]]]
+                       :latest-time 6}])
+        event-label (tui-annotations/format-annotations
+                     [{:kind :event
+                       :facts [{:input-id [:compiler-2/primitive node-id]
+                                :source [:event/derived
+                                         [:compiler-2/primitive node-id]
+                                         #{[node-id "slider-panel-0"]}]
+                                :timestamp #{{:input-id node-id
+                                              :source "slider-panel-0"
+                                              :timestamp 3}}
+                                :source-state event/active-state}]}])]
+    (is (= "[be:xr-trace @6]" trace-label))
+    (is (str/includes? event-label "[event:primitive/derived@joined{"))
+    (is (str/includes? event-label "/slider-panel-0@3"))
+    (is (not (str/includes? trace-label "#propagators.ids.NodeId")))
+    (is (not (str/includes? trace-label ":trace/subscribe")))
+    (is (not (str/includes? event-label "#propagators.ids.NodeId")))))
 
 (deftest block-target-rejects-non-empty-past-block
   (let [session (runtime/new-session)]

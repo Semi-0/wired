@@ -254,7 +254,10 @@
   [session]
   (let [result (xr/handle-command! session {:op :xr/effects})]
     (when-let [graph (some launch-effect-graph (reverse (:effects result)))]
-      {:graph (assoc (xr/graph->json graph)
+      {:graph (assoc (xr/graph->json
+                      graph
+                      {:changed-node-ids (:changed-node-ids result)
+                       :changed-cell-ids (:changed-cells result)})
                      :widgets (vals (:widgets result)))})))
 
 (defn- start-effect-push!

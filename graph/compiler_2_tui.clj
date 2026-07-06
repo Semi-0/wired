@@ -25,15 +25,34 @@
     (pos? (long (or height 0)))
     (assoc :stress-grid-height (max 1 (quot (long height) 7)))))
 
+(defn- normalize-render-graph
+  [{:keys [nodes edges] :as graph}]
+  (let [ids (->> (concat (keys nodes) (mapcat identity edges))
+                 distinct
+                 (sort-by pr-str))
+        id-map (into {}
+                     (map-indexed (fn [idx id]
+                                    [id (keyword (str "n" idx))]))
+                     ids)]
+    (assoc graph
+           :nodes (into {}
+                        (map (fn [[id label]]
+                               [(get id-map id) label]))
+                        nodes)
+           :edges (mapv (fn [[from to]]
+                          [(get id-map from) (get id-map to)])
+                        edges))))
+
 (defn render-value
   ([value] (render-value value nil))
   ([value viewport-size]
    (if (graph-value? value)
      (try
-       (with-out-str
-         (v/draw-stress-directed-graph (:edges value)
-                                       (:nodes value)
-                                       (graph-render-opts viewport-size)))
+       (let [{:keys [edges nodes]} (normalize-render-graph value)]
+         (with-out-str
+           (v/draw-stress-directed-graph edges
+                                         nodes
+                                         (graph-render-opts viewport-size))))
        (catch Throwable t
          (str "graph render error: " (ex-message t))))
      (str value))))

@@ -13,6 +13,7 @@
             [propagators.compiler-2.env :as cenv]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.datastructures.tms :as tms]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace])
@@ -311,7 +312,7 @@
                          :source "(define-behaviors a b c)
                                   (def out)
                                   (io:slider-panel a b c)
-                                  (<-> (- (+ a b) c) out)"})
+                                  (<-> (be:- (be:+ a b) c) out)"})
     (let [widget (get-in @session [:xr :widgets "slider-panel-0"])]
       (is (= "slider-panel" (:type widget)))
       (doseq [label ["a" "b" "c"]]
@@ -365,9 +366,12 @@
                          :channel "value"
                          :value 11})
     (let [events-id (cell-id session "events")
-          events (net/network-cell-strongest (:program/net @session) events-id)]
-      (is (= 9 (obj/slot-value events 1)))
-      (is (= 11 (obj/slot-value events 2)))
+          events (net/network-cell-content (:program/net @session) events-id)
+          retained (->> (event/facts events)
+                        (map (juxt event/timestamp event/event-value))
+                        (sort-by first)
+                        vec)]
+      (is (= [[1 9] [2 11]] retained))
       (is (= 11 (behavior-current session "out"))))))
 
 (deftest xr-widget-event-response-does-not-replace-traced-graph
@@ -375,7 +379,7 @@
     (runtime/register-tui! session {:client-id "A"})
     (doseq [source ["(define-behaviors a b c)"
                     "(def out)"
-                    "(<-> (- (+ a b) c) out)"
+                    "(<-> (be:- (be:+ a b) c) out)"
                     "(let-cell [g]
                        (trace out g)
                        (io:xr g))"
@@ -455,7 +459,7 @@
   "(define-behaviors a b c)
    (def out)
    (io:slider-panel-name \"mix\" a b c)
-   (<-> (- (+ a b) c) out)")
+   (<-> (be:- (be:+ a b) c) out)")
 
 (def user-route-widget-behavior-extension
   "(def a-events)
@@ -475,7 +479,7 @@
      \"b\" b b-events
      \"c\" c c-events
      widget)
-   (<-> (- (+ a b) c) out)")
+   (<-> (be:- (be:+ a b) c) out)")
 
 (deftest widget-events-drive-complex-behavior-arithmetic-chain
   (let [session (runtime/new-session)]
@@ -1097,7 +1101,7 @@
     (runtime/register-tui! session {:client-id "A"})
     (doseq [source ["(define-behaviors a b c)"
                     "(def out)"
-                    "(<-> (- (+ a b) c) out)"
+                    "(<-> (be:- (be:+ a b) c) out)"
                     "(let-cell [g]
 	                       (trace out g)
 	                       (io:xr g))"
@@ -1111,17 +1115,96 @@
              (->> widgets
                   (filter #(= "slider-panel-0" (:id %)))
                   first
-                  :channels
-                  vals
-                  (map :channel)
-                  set))))))
+	                  :channels
+	                  vals
+	                  (map :channel)
+	                  set))))))
+
+(deftest io-xr-tracks-default-event-arithmetic-from-slider-panel-alias
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d)"
+                    "(-> (- (+ a c) b) d)"
+                    "(def-cell g)"
+                    "(trace d g)"
+                    "(io:xr g)"
+                    "(io:slider-panels a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
+    (doseq [[channel value] [["a" 10] ["b" 4] ["c" 3]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (is (wait-for-xr-launch session))
+    (let [payload (#'xr-server/latest-effect-payload session)
+          widgets (get-in payload [:graph :widgets])
+          d-id (cell-id session "d")
+          d-content (net/network-cell-content (:program/net @session) d-id)
+          labels (set (keep #(get-in % [:label]) (get-in payload [:graph :nodes])))]
+      (is (some #(= "slider-panel-0" (:id %)) widgets))
+      (is (= [9] (vec (vals (event/active-values d-content)))))
+      (is (every? labels ["out:trace-target" "a" "b" "c" "+" "-"])))
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "a"
+                                    :value 11})
+    (is (wait-for-xr-launch session))
+    (let [payload (#'xr-server/latest-effect-payload session)
+          d-id (cell-id session "d")
+          d-content (net/network-cell-content (:program/net @session) d-id)
+          nodes (get-in payload [:graph :nodes])
+          labels (set (keep #(get-in % [:label]) nodes))
+          changed-node-ids (set (get-in payload [:graph :changed-node-ids]))
+          changed-labels (->> nodes
+                              (filter #(contains? changed-node-ids (:id %)))
+                              (keep :label)
+                              set)
+          d-node-changed? (some (fn [node]
+                                  (and (contains? changed-node-ids (:id node))
+                                       (contains? (set (:aliases node))
+                                                  (pr-str d-id))))
+                                nodes)]
+      (is (= [10] (vec (vals (event/active-values d-content)))))
+      (is (every? labels ["out:trace-target" "a" "b" "c" "+" "-"]))
+      (is (contains? changed-labels "a"))
+      (is d-node-changed?))))
+
+(deftest trace-installed-after-event-projection-traces-cell-not-projection
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d)"
+                    "(-> (- (+ a c) b) d)"
+                    "(io:slider-panels a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (doseq [[channel value] [["a" 10] ["b" 4] ["c" 3]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (doseq [source ["(def-cell g)"
+                    "(trace d g)"
+                    "(io:xr g)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (runtime/refresh-trace-subscriptions! session)
+    (let [g-id (cell-id session "g")
+          g-value (net/network-cell-strongest (:program/net @session) g-id)
+          trace-graph (behavior/base-value (behavior/strongest-value g-value))
+          labels (set (vals (:nodes trace-graph)))
+          requests (map :request (vals (:trace/subscriptions @session)))]
+      (is (some #(= "d" (:label %)) requests))
+      (is (semantic-trace/semantic-trace-graph? trace-graph))
+      (is (every? labels ["d" "a" "b" "c" "+" "-"])))))
 
 (deftest io-xr-relaunches-on-widget-update-after-be-block-rebuild
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (doseq [source ["(define-behaviors a b c)"
                     "(def out)"
-                    "(<-> (- (+ a b) c) out)"
+                    "(<-> (be:- (be:+ a b) c) out)"
                     "(let-cell [g]
                        (trace out g)
                        (io:xr g))"

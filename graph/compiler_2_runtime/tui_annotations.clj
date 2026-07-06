@@ -5,7 +5,9 @@
             [propagators.cells.value :as value]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.datastructures.tms :as tms]
+            [propagators.ids :as ids]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace]))
 
@@ -31,6 +33,19 @@
       (if (value/unusable? current)
         current
         (project-value current)))
+
+    (event/event-projection? v)
+    (let [slot-keys (obj/public-slot-keys v)]
+      (if (= 1 (count slot-keys))
+        (obj/slot-value v (first slot-keys))
+        (into {}
+              (map (fn [slot-key]
+                     [slot-key (obj/slot-value v slot-key)]))
+              slot-keys)))
+
+    (or (event/event-content? v)
+        (event/event-fact? v))
+    (project-value (event/strongest-value v))
 
     (tms/distributed-value? v)
     (let [projected (tms/strongest-distributed-value v)]
@@ -115,22 +130,96 @@
       annotation (conj annotation)
       base (into (value-annotations base)))))
 
+(defn- event-annotation
+  [v]
+  (let [facts (event/active-facts v)]
+    (when (seq facts)
+      {:kind :event
+       :facts (mapv (fn [fact]
+                      {:input-id (event/input-id fact)
+                       :source (event/source fact)
+                       :timestamp (event/timestamp fact)
+                       :source-state (event/source-state fact)})
+                    facts)})))
+
 (defn value-annotations
   [v]
   (cond
     (value/unusable? v) []
+    (or (event/event-content? v)
+        (event/event-fact? v)
+        (event/event-projection? v)) (if-let [annotation (event-annotation v)]
+                                       [annotation]
+                                       [])
     (behavior/behavior-value? v) (behavior-annotations v)
     (behavior-projection? v) (behavior-annotations v)
     (tms/distributed-value? v) (tms-annotations v)
     :else []))
 
+(def max-annotation-token-length 48)
+
+(defn- abbreviate
+  [s]
+  (if (> (count s) max-annotation-token-length)
+    (str (subs s 0 (- max-annotation-token-length 3)) "...")
+    s))
+
+(defn- trace-subscription-identity?
+  [x]
+  (and (vector? x)
+       (= :xr/trace-subscription (first x))))
+
+(defn- primitive-event-identity?
+  [x]
+  (and (vector? x)
+       (= :compiler-2/primitive (first x))))
+
+(defn- derived-event-source?
+  [x]
+  (and (vector? x)
+       (= :event/derived (first x))))
+
+(defn- node-token
+  [x]
+  (when (ids/node-id? x)
+    (str "node:" (subs (str (:uuid x)) 0 8))))
+
 (defn- annotation-token
   [x]
   (cond
+    (trace-subscription-identity? x) "xr-trace"
+    (primitive-event-identity? x) "primitive"
+    (derived-event-source? x) "derived"
+    (ids/node-id? x) (node-token x)
     (keyword? x) (name x)
     (symbol? x) (name x)
     (string? x) x
-    :else (pr-str x)))
+    :else (abbreviate (pr-str x))))
+
+(defn- evidence-timestamp-token
+  [{:keys [input-id source timestamp]}]
+  (str (annotation-token input-id)
+       "/"
+       (annotation-token source)
+       "@"
+       (annotation-token timestamp)))
+
+(defn- event-timestamp-token
+  [x]
+  (if (and (set? x)
+           (every? #(and (map? %)
+                         (contains? % :input-id)
+                         (contains? % :source)
+                         (contains? % :timestamp))
+                   x))
+    (str "joined{"
+         (str/join ","
+                   (map evidence-timestamp-token
+                        (sort-by (juxt (comp pr-str :input-id)
+                                       (comp pr-str :source))
+                                 x)))
+         "}")
+    (annotation-token x)))
 
 (defn- behavior-annotation-label
   [{:keys [identities latest-time]}]
@@ -150,6 +239,22 @@
          (str " premises=" (str/join "," (map annotation-token active-premises))))
        "]"))
 
+(defn- event-fact-label
+  [{:keys [input-id source timestamp source-state]}]
+  (str (annotation-token input-id)
+       "/"
+       (annotation-token source)
+       "@"
+       (event-timestamp-token timestamp)
+       (when (= event/retracted-state source-state)
+         ":retracted")))
+
+(defn- event-annotation-label
+  [{:keys [facts]}]
+  (str "[event:"
+       (str/join "," (map event-fact-label facts))
+       "]"))
+
 (defn format-annotations
   [annotations]
   (when (seq annotations)
@@ -157,6 +262,7 @@
      " "
      (map (fn [{:keys [kind] :as annotation}]
             (case kind
+              :event (event-annotation-label annotation)
               :behavior (behavior-annotation-label annotation)
               :tms (tms-annotation-label annotation)
               (pr-str annotation)))

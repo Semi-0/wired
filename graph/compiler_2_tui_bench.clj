@@ -1,6 +1,7 @@
 (ns graph.compiler-2-tui-bench
   "Small benchmark for wired TUI trace rebuild/poll/render paths."
-  (:require [graph.compiler-2-runtime-server :as server]
+  (:require [clojure.string :as str]
+            [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime.input :as runtime-input]
             [graph.compiler-2-tui :as tui]
@@ -147,6 +148,160 @@
           i
           i
           (trace-cell-symbol (mod i 5))))
+
+(declare trace-completions wait-for-trace-completions! xr-effect-read-ms)
+
+(def behavior-graph-channels
+  ["a" "b" "c" "d" "e"])
+
+(def behavior-graph-terms
+  ["a" "b" "c" "d" "e" "a" "b" "c" "d" "e"])
+
+(defn- behavior-graph-expr
+  [op]
+  (reduce (fn [acc term]
+            (format "(%s %s %s)" op acc term))
+          (first behavior-graph-terms)
+          (rest behavior-graph-terms)))
+
+(defn- behavior-graph-sources
+  [op]
+  [(format "(define-behaviors %s)"
+           (str/join " " behavior-graph-channels))
+   "(def out)"
+   "(def g)"
+   (format "(io:slider-panel %s)"
+           (str/join " " behavior-graph-channels))
+   (format "(-> %s out)" (behavior-graph-expr op))
+   "(-> out (be:block 20))"
+   "(trace out g)"
+   "(io:xr g)"])
+
+(defn- behavior-graph-value
+  [latest]
+  (reduce + (map #(get latest % 0) behavior-graph-terms)))
+
+(defn- output-block-value
+  [session]
+  (get-in (runtime/read-tui-view @session {:client-id "A"})
+          [:blocks 20 :value]))
+
+(defn- behavior-graph-update!
+  [session channel value]
+  (runtime/commit-runtime-input!
+   session
+   {:runtime/input :xr/widget-event
+    :widget-id "slider-panel-0"
+    :channel channel
+    :value value}))
+
+(defn- wait-for-behavior-graph-traces!
+  [session target timeout-ms]
+  (let [started (System/nanoTime)
+        deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (>= (trace-completions session) target)
+        {:ms (/ (double (- (System/nanoTime) started)) 1000000.0)
+         :timed-out? false}
+
+        (> (System/currentTimeMillis) deadline)
+        {:ms (/ (double (- (System/nanoTime) started)) 1000000.0)
+         :timed-out? true}
+
+        :else
+        (do
+          (Thread/sleep 1)
+          (recur))))))
+
+(defn- behavior-graph-variant
+  [{:keys [variant op updates trace-timeout-ms]}]
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (try
+      (let [setup-ms (elapsed-ms
+                      #(doseq [source (behavior-graph-sources op)]
+                         (runtime/append-tui-block!
+                          session
+                          {:client-id "A"
+                           :text source})))
+            warmup-ms (elapsed-ms
+                       #(doseq [channel behavior-graph-channels]
+                          (behavior-graph-update! session channel 0)))
+            fallback-before (long (or (:runtime/full-rebuild-fallbacks @session)
+                                      0))
+            latest (atom (zipmap behavior-graph-channels (repeat 0)))
+            rows (mapv
+                  (fn [i]
+                    (let [channel (nth behavior-graph-channels
+                                       (mod i (count behavior-graph-channels)))
+                          value (inc i)
+                          _ (swap! latest assoc channel value)
+                          before (trace-completions session)
+                          update-ms (elapsed-ms
+                                     #(behavior-graph-update!
+                                       session
+                                       channel
+                                       value))
+                          scheduled (runtime/schedule-trace-refreshes! session)
+                          trace-result (when (pos? scheduled)
+                                         (wait-for-behavior-graph-traces!
+                                          session
+                                          (+ before scheduled)
+                                          trace-timeout-ms))
+                          tui-read-ms (elapsed-ms
+                                       #(runtime/read-tui-view
+                                         @session
+                                         {:client-id "A"}))
+                          xr-read-ms (xr-effect-read-ms session)]
+                      {:index i
+                       :channel channel
+                       :value value
+                       :update-ms update-ms
+                       :scheduled-traces scheduled
+                       :trace-refresh-ms (:ms trace-result)
+                       :trace-refresh-timeout? (:timed-out? trace-result)
+                       :tui-read-ms tui-read-ms
+                       :xr-effect-read-ms xr-read-ms}))
+                  (range updates))
+            update-ms (mapv :update-ms rows)
+            tui-read-ms (mapv :tui-read-ms rows)
+            xr-read-ms (mapv :xr-effect-read-ms rows)
+            trace-ms (vec (keep :trace-refresh-ms rows))
+            expected (behavior-graph-value @latest)
+            actual (output-block-value session)]
+        {:variant variant
+         :op op
+         :update-count updates
+         :setup-ms setup-ms
+         :warmup-ms warmup-ms
+         :first-update-ms (:update-ms (first rows))
+         :updates (assoc (summary update-ms)
+                         :max-ms (apply max update-ms)
+                         :count (count update-ms))
+         :tui-read-view (assoc (summary tui-read-ms) :count (count tui-read-ms))
+         :xr-effect-read (assoc (summary xr-read-ms) :count (count xr-read-ms))
+         :trace-refresh (when (seq trace-ms)
+                          (assoc (summary trace-ms) :count (count trace-ms)))
+         :trace {:subscriptions (count (:trace/subscriptions @session))
+                 :published (long (or (:trace/published-results @session) 0))
+                 :stale-dropped (long (or (:trace/stale-results @session) 0))
+                 :unchanged-dropped (long (or (:trace/unchanged-results @session)
+                                              0))
+                 :refresh-timeouts (count (filter :trace-refresh-timeout?
+                                                  rows))}
+         :fallback-count (- (long (or (:runtime/full-rebuild-fallbacks @session)
+                                      0))
+                            fallback-before)
+         :graph (graph-size session)
+         :final {:expected expected
+                 :actual actual
+                 :correct? (= expected actual)}})
+      (catch Throwable t
+        {:variant variant
+         :op op
+         :error (.getMessage t)
+         :data (ex-data t)}))))
 
 (defn- trace-completions
   [session]
@@ -507,12 +662,30 @@
        :blocks (count (get-in @session [:tuis "A" :blocks]))
        :graph (graph-size session)})))
 
+(defn- behavior-graph-bench
+  [{:keys [updates trace-timeout-ms]
+    :or {updates 5 trace-timeout-ms 50}}]
+  {:variants [(behavior-graph-variant
+               {:variant :legacy-default-arithmetic
+                :op "+"
+                :updates updates
+                :trace-timeout-ms trace-timeout-ms})
+              (behavior-graph-variant
+               {:variant :explicit-be-arithmetic
+                :op "be:+"
+                :updates updates
+                :trace-timeout-ms trace-timeout-ms})]})
+
 (defn -main
   [& args]
   (prn (case (first args)
          "large" (large-trace-bench)
          "incremental" (incremental-trace-bench)
          "trace-subscriptions" (trace-subscriptions-bench)
+         "behavior-graph" (behavior-graph-bench
+                           {:updates (parse-count (second args) 5)
+                            :trace-timeout-ms (parse-count (nth args 2 nil)
+                                                           50)})
          "multi-client" (multi-client-bench
                          {:clients (parse-count (second args) 4)
                           :blocks (parse-count (nth args 2 nil) 10)
