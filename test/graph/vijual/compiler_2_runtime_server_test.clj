@@ -184,6 +184,13 @@
                (get-in (runtime/read-tui-view @session {:client-id "A"})
                        [:blocks 2 :value])))))))
 
+(deftest tui-render-view-includes-block-annotation
+  (let [rendered (tui/render-view
+                  {:blocks [{:index 0
+                             :value 9
+                             :annotation "[be:a @1]"}]})]
+    (is (str/includes? rendered "9  [be:a @1]"))))
+
 (deftest block-target-expression-writes-future-block
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
@@ -228,14 +235,22 @@
                                      {:runtime/input :cell-message
                                       :cell-id events-id
                                       :update (obj/compound-object {1 7})})
-      (is (= 7 (get-in (runtime/read-tui-view @session {:client-id "A"})
-                       [:blocks 5 :value])))
+      (let [block (get-in (runtime/read-tui-view @session {:client-id "A"})
+                          [:blocks 5])]
+        (is (= 7 (:value block)))
+        (is (= :behavior (get-in block [:annotations 0 :kind])))
+        (is (= #{events-id}
+               (set (get-in block [:annotations 0 :identities]))))
+        (is (= 1 (get-in block [:annotations 0 :latest-time])))
+        (is (str/includes? (:annotation block) "[be:")))
       (runtime/commit-runtime-input! session
                                      {:runtime/input :cell-message
                                       :cell-id events-id
                                       :update (obj/compound-object {2 8})})
-      (is (= 8 (get-in (runtime/read-tui-view @session {:client-id "A"})
-                       [:blocks 5 :value]))))))
+      (let [block (get-in (runtime/read-tui-view @session {:client-id "A"})
+                          [:blocks 5])]
+        (is (= 8 (:value block)))
+        (is (= 2 (get-in block [:annotations 0 :latest-time])))))))
 
 (deftest tui-simplified-behavior-slider-panel-updates-be-block
   (let [session (runtime/new-session)]
@@ -529,6 +544,26 @@
     (let [displayed (get-in (runtime/read-tui-view @session {:client-id "A"})
                             [:blocks 1 :value])]
       (is (value/nothing? displayed)))))
+
+(deftest tui-block-at-displays-tms-annotations
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (runtime/append-tui-block!
+     session
+     {:client-id "A"
+      :text "(let-cell [out]
+               (premise-input :yes :p 0 out)
+               (block-at % 1 out)
+               out)"})
+    (runtime/append-tui-block! session {:client-id "A"})
+    (let [block (get-in (runtime/read-tui-view @session {:client-id "A"})
+                        [:blocks 1])]
+      (is (= :yes (:value block)))
+      (is (= :tms (get-in block [:annotations 0 :kind])))
+      (is (= :justified (get-in block [:annotations 0 :status])))
+      (is (= #{:p}
+             (set (get-in block [:annotations 0 :active-premises]))))
+      (is (str/includes? (:annotation block) "[tms:justified")))))
 
 (deftest top-level-relationships-do-not-auto-output-into-next-block
   (let [session (runtime/new-session)]

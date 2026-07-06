@@ -5,17 +5,13 @@
             [graph.compiler-2-runtime.input :as input]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
-            [graph.compiler-2-semantic-repl :as semantic-repl]
+            [graph.compiler-2-runtime.tui-annotations :as annotations]
             [propagators.cells.value :as value]
             [propagators.core :as core]
-            [propagators.datastructures.behavior :as behavior]
-            [propagators.datastructures.compound-object :as obj]
-            [propagators.datastructures.tms :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
-            [propagators.network-builder :as nb]
-            [propagators.semantic-trace :as semantic-trace]))
+            [propagators.network-builder :as nb]))
 
 (def stable-node-id state/stable-node-id)
 (def ensure-session-state! state/ensure-session-state!)
@@ -268,6 +264,10 @@
   [state block]
   (net/network-cell-strongest (:network state) (:display-id block)))
 
+(defn block-display-content
+  [state block]
+  (net/network-cell-content (:network state) (:display-id block)))
+
 (defn block-view-value
   [state block]
   (let [display (when (nil? (:order block))
@@ -276,40 +276,13 @@
       display
       (block-value state block))))
 
-(defn behavior-projection?
-  [v]
-  (and (contains? (obj/public-slot-keys v) behavior/base-layer)
-       (contains? (obj/public-slot-keys v) behavior/summary-layer)))
-
-(defn project-tui-value
-  [v]
-  (cond
-    (value/unusable? v)
-    v
-
-    (semantic-trace/semantic-trace-graph? v)
-    v
-
-    (behavior-projection? v)
-    (project-tui-value (behavior/base-value v))
-
-    (behavior/behavior-value? v)
-    (let [current (behavior/strongest-value v)]
-      (if (value/unusable? current)
-        current
-        (project-tui-value current)))
-
-    (tms/distributed-value? v)
-    (let [projected (tms/strongest-distributed-value v)]
-      (if (value/unusable? projected)
-        projected
-        (tms/distributed-base-value projected)))
-
-    (net/network? v)
-    (or (semantic-repl/display-cell-value v) "network")
-
-    :else
-    v))
+(defn block-view-content
+  [state block]
+  (let [display (when (nil? (:order block))
+                  (block-display-value state block))]
+    (if (and display (not (value/unusable? display)))
+      (block-display-content state block)
+      (block-value state block))))
 
 (defn referenced-block-indexes
   [state blocks]
@@ -332,13 +305,17 @@
        :changed-cells (mapv pr-str (:runtime/changed-cells state))
        :changed-node-ids (mapv pr-str (:runtime/changed-node-ids state))
        :blocks (mapv (fn [block]
-                       {:index (:index block)
-                        :block-id (pr-str (:block-id block))
-                        :text-id (pr-str (:text-id block))
-                        :display-id (pr-str (:display-id block))
-                        :referenced? (contains? referenced-indexes
-                                                (:index block))
-                        :value (project-tui-value (block-view-value state block))})
+                       (let [raw-value (block-view-content state block)]
+                         (annotations/annotate-block-view
+                          {:index (:index block)
+                           :block-id (pr-str (:block-id block))
+                           :text-id (pr-str (:text-id block))
+                           :display-id (pr-str (:display-id block))
+                           :referenced? (contains? referenced-indexes
+                                                   (:index block))
+                           :value (annotations/project-value
+                                   (block-view-value state block))}
+                          raw-value)))
                      (:blocks tui))})))
 
 (defn read-tui-view

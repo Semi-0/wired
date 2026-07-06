@@ -54,8 +54,11 @@
   ([{:keys [blocks]} viewport-size]
    (str/join
     "\n\n"
-    (map (fn [{:keys [index value]}]
-           (str "[" index "]\n" (render-value value viewport-size)))
+    (map (fn [{:keys [index value annotation]}]
+           (str "[" index "]\n"
+                (render-value value viewport-size)
+                (when annotation
+                  (str "  " annotation))))
          (visible-blocks blocks)))))
 
 (def ^:private viewport-keys

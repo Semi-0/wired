@@ -111,10 +111,15 @@
 
 (defn display-behavior-update
   [display-id tick payload]
-  (behavior/retained-value [:tui/display display-id]
-                           tick
-                           payload
-                           #{[:tui/display display-id tick]}))
+  (let [payload-identities (behavior/identity-set payload)
+        identities (if (seq payload-identities)
+                     payload-identities
+                     #{[:tui/display display-id]})]
+    (behavior/retained-value [:tui/display display-id]
+                             tick
+                             payload
+                             #{[:tui/display display-id tick]}
+                             identities)))
 
 (defn write-block-display-value
   [state block tick payload]
