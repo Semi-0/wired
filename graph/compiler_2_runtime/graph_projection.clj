@@ -8,7 +8,9 @@
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.event :as event]
+            [propagators.graph :as graph]
             [propagators.network :as net]
+            [propagators.propagator :as prop]
             [propagators.semantic-trace :as semantic-trace]))
 
 (def labels state/labels)
@@ -75,9 +77,9 @@
     :else
     true))
 
-(defn assoc-graph-cell-value
-  [state cell-id]
-  (let [label (get (labels state) cell-id)
+(defn- assoc-graph-cell-value*
+  [state labels* cell-id]
+  (let [label (get labels* cell-id)
         graph0 (ensure-graph-cell-node (:graph state) label cell-id)
         node-id (graph-cell-node-id graph0 cell-id)
         strongest (net/network-cell-strongest (:program/net state) cell-id)
@@ -88,17 +90,45 @@
            :graph graph1
            :program/graph graph1)))
 
+(defn assoc-graph-cell-value
+  [state cell-id]
+  (assoc-graph-cell-value* state (labels state) cell-id))
+
 (defn assoc-graph-cell-values
   [state cell-ids]
-  (reduce assoc-graph-cell-value state cell-ids))
+  (let [labels* (labels state)]
+    (reduce #(assoc-graph-cell-value* %1 labels* %2) state cell-ids)))
+
+(defn- assoc-existing-graph-cell-values
+  [state cell->node-ids]
+  (let [program-net (:program/net state)
+        graph (:graph state)
+        graph' (reduce
+                (fn [g [cell-id node-ids]]
+                  (let [strongest (net/network-cell-strongest program-net cell-id)]
+                    (reduce (fn [g* node-id]
+                              (if (graph-cell-value? strongest)
+                                (assoc-in g* [:values node-id] strongest)
+                                (update g* :values dissoc node-id)))
+                            g
+                            node-ids)))
+                graph
+                cell->node-ids)]
+    (assoc state
+           :graph graph'
+           :program/graph graph')))
 
 (defn program-strongest-snapshot
-  [program-net]
+  ([program-net]
+   (program-strongest-snapshot program-net nil))
+  ([program-net cell-ids]
   (into {}
         (keep (fn [[id entry]]
-                (when (cell/cell? entry)
+                (when (and (cell/cell? entry)
+                           (or (nil? cell-ids)
+                               (contains? cell-ids id)))
                   [id (cell/cell-strongest entry)])))
-        (net/net-env program-net)))
+        (net/net-env program-net))))
 
 (def ^:private missing-cell ::missing-cell)
 
@@ -112,12 +142,53 @@
        (sort-by pr-str)
        vec))
 
+(defn- cell-id?
+  [program-net id]
+  (cell/cell? (get (net/net-env program-net) id)))
+
+(defn- prop-id?
+  [program-net id]
+  (prop/prop? (get (net/net-env program-net) id)))
+
+(defn downstream-cell-ids
+  "Cells that can be affected by messages starting at `start-cell-ids`.
+
+  This is a runtime projection helper, not scheduler state. It only narrows
+  before/after comparison for UI change reporting."
+  [program-net start-cell-ids]
+  (let [g (net/net-graph program-net)]
+    (loop [frontier (vec start-cell-ids)
+           seen #{}
+           cells #{}]
+      (if-let [id (first frontier)]
+        (if (contains? seen id)
+          (recur (subvec frontier 1) seen cells)
+          (let [node (get g id)
+                next-ids (if node (graph/node-output-ids node) #{})
+                cells' (if (cell-id? program-net id) (conj cells id) cells)
+                props (filter #(prop-id? program-net %) next-ids)
+                prop-outputs (mapcat (fn [prop-id]
+                                        (graph/node-output-ids
+                                         (graph/get-node g prop-id)))
+                                      props)
+                next-cells (filter #(cell-id? program-net %) prop-outputs)]
+            (recur (into (subvec frontier 1) next-cells)
+                   (conj seen id)
+                   cells')))
+        cells))))
+
 (defn record-runtime-transaction
   [state before-program-net]
-  (let [before (if before-program-net
-                 (program-strongest-snapshot before-program-net)
+  (let [candidates (seq (:runtime/changed-candidate-cells state))
+        label-aware? (or (seq (get-in state [:xr :launched]))
+                         (seq (:trace/subscriptions state)))
+        tracked (or (some-> candidates set)
+                    (set (keys (get-in state [:graph :node-aliases]))))
+        tracked (when (seq tracked) tracked)
+        before (if before-program-net
+                 (program-strongest-snapshot before-program-net tracked)
                  {})
-        after (program-strongest-snapshot (:program/net state))
+        after (program-strongest-snapshot (:program/net state) tracked)
         graph (:graph state)
         changed (changed-cell-ids before after)
         pairs (keep (fn [cell-id]
@@ -130,9 +201,12 @@
                    (mapcat second)
                    distinct
                    vec)]
-    (assoc (assoc-graph-cell-values state cells)
-           :runtime/changed-cells cells
-           :runtime/changed-node-ids nodes)))
+    (-> (if label-aware?
+          (assoc-graph-cell-values state cells)
+          (assoc-existing-graph-cell-values state pairs))
+        (assoc :runtime/changed-cells cells
+               :runtime/changed-node-ids nodes)
+        (dissoc :runtime/changed-candidate-cells))))
 
 (defn widget-channel-view
   [state {:keys [widget/channel widget/view-cell widget/event-cell widget/view-value]}]
@@ -185,18 +259,21 @@
 
 (defn record-widget-register
   [state request]
-  (let [{:widget/keys [type id channels]} (:boundary/payload request)
-        widget-id (str id)
-        channels* (mapv #(widget-channel-view state %) channels)
-        channel-map (into {}
-                          (map (fn [channel]
-                                 [(:channel channel) channel]))
-                          channels*)]
-    (-> state
-        (assoc-in [:xr :widgets widget-id]
-                  {:id widget-id
-                   :type (name type)
-                   :channels channel-map
-                   :epoch (:boundary/epoch request)})
-        (update-in [:xr :effects] (fnil conj []) request)
-        (add-widget-to-graph type widget-id channels*))))
+  (if (get-in state [:xr :widget-registrations (:boundary/id request)])
+    state
+    (let [{:widget/keys [type id channels]} (:boundary/payload request)
+          widget-id (str id)
+          channels* (mapv #(widget-channel-view state %) channels)
+          channel-map (into {}
+                            (map (fn [channel]
+                                   [(:channel channel) channel]))
+                            channels*)]
+      (-> state
+          (assoc-in [:xr :widget-registrations (:boundary/id request)] true)
+          (assoc-in [:xr :widgets widget-id]
+                    {:id widget-id
+                     :type (name type)
+                     :channels channel-map
+                     :epoch (:boundary/epoch request)})
+          (update-in [:xr :effects] (fnil conj []) request)
+          (add-widget-to-graph type widget-id channels*)))))

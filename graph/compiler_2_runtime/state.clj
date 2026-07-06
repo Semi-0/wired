@@ -6,7 +6,8 @@
             [propagators.cells.cell-protocol :as cell-protocol]
             [propagators.compile :as compile1]
             [propagators.compiler-2.helpers :as compiler-helpers]
-            [propagators.network :as net])
+            [propagators.network :as net]
+            [propagators.network-cache :as network-cache])
   (:import [java.util.concurrent Executors]))
 
 (defn empty-graph []
@@ -52,7 +53,8 @@
       (compile1/install-and-run (cell-protocol/install-cell-protocol))
       (compile1/install-and-run (cell-protocol/install-event-protocol))
       (compile1/install-and-run (cell-protocol/install-behavior-protocol))
-      (compile1/install-and-run (cell-protocol/install-tms-distributed-protocol))))
+      (compile1/install-and-run (cell-protocol/install-tms-distributed-protocol))
+      (cell-protocol/prefer-direct-standard-protocols)))
 
 (defn runtime-base-net []
   (install-runtime-protocols net/empty-net))
@@ -97,10 +99,15 @@
 (defn mutate-session!
   [session f]
   (locking session
-    (let [state @session
-          state' (preserve-xr-traces state (f state))]
-      (reset! session state')
-      state')))
+    (network-cache/with-cache
+      (let [state @session
+            state' (->> (f state)
+                        (preserve-xr-traces state))
+            state'' (assoc state'
+                           :runtime/network-cache-stats
+                           (network-cache/stats))]
+        (reset! session state'')
+        state''))))
 
 (defn require-state
   [state]

@@ -5,7 +5,9 @@
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime.input :as runtime-input]
             [graph.compiler-2-tui :as tui]
-            [propagators.compiler-2.env :as cenv]))
+            [propagators.cells.cell-protocol :as cell-protocol]
+            [propagators.compiler-2.env :as cenv]
+            [propagators.generic-procedure :as generic]))
 
 (def simple-trace-commands
   [{:op :tui/register :client-id "A"}
@@ -194,6 +196,104 @@
     :widget-id "slider-panel-0"
     :channel channel
     :value value}))
+
+(def slider-cache-profile-events
+  (vec
+   (map-indexed
+    (fn [i channel]
+      {:channel channel
+       :value (+ 10 i)})
+    (take 60 (cycle ["a" "b" "c"])))))
+
+(defn- slider-cache-sources
+  [full?]
+  (cond-> ["(def-cells a b c d)"
+           "(-> (- (+ a c) b) d)"
+           "(io:slider-panels a b c)"]
+    full?
+    (into ["(def-cell g)"
+           "(trace d g)"
+           "(io:xr g)"
+           "(-> d (block 7))"])))
+
+(defn- runtime-widget-update!
+  [session {:keys [channel value]}]
+  (runtime/commit-runtime-input!
+   session
+   {:runtime/input :xr/widget-event
+    :widget-id "slider-panel-0"
+    :channel channel
+    :value value}))
+
+(defn- prefer-generic-protocol-session!
+  [session]
+  (swap! session update :program/net cell-protocol/prefer-generic-standard-protocols)
+  nil)
+
+(defn- with-slider-cache-session
+  [{:keys [full? generic-protocol? retained-generic?]} f]
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (let [setup-ms (elapsed-ms
+                    #(doseq [source (slider-cache-sources full?)]
+                       (runtime-append! session source)))]
+      (when generic-protocol?
+        (prefer-generic-protocol-session! session))
+      (if retained-generic?
+        (generic/with-retained-apply-generic-values
+          (f session setup-ms))
+        (f session setup-ms)))))
+
+(defn- summarize-ms
+  [xs]
+  (assoc (summary xs)
+         :max-ms (apply max xs)
+         :total-ms (reduce + xs)
+         :count (count xs)))
+
+(defn- slider-cache-profile-variant
+  [{:keys [variant full? retained-generic?] :as options}]
+  (with-slider-cache-session
+    options
+    (fn [session setup-ms]
+      (let [rows (mapv (fn [event]
+                         (assoc event
+                                :ms (elapsed-ms
+                                     #(runtime-widget-update! session event))))
+                       slider-cache-profile-events)
+            ms (mapv :ms rows)
+            cell-d (runtime/read-cell @session {:label "d"})
+            view (when full?
+                   (runtime/read-tui-view @session {:client-id "A"}))]
+        {:variant variant
+         :setup-ms setup-ms
+         :updates (summarize-ms ms)
+         :first-update-ms (:ms (first rows))
+         :last-update-ms (:ms (last rows))
+         :cache-stats (:runtime/network-cache-stats @session)
+         :retained-generic-stats (when retained-generic?
+                                   (generic/retained-apply-stats))
+         :graph (graph-size session)
+         :final {:d (:strongest cell-d)
+                 :block-7 (when full? (get-in view [:blocks 7 :value]))}}))))
+
+(defn- slider-cache-profile-bench
+  []
+  {:variants [(slider-cache-profile-variant
+               {:variant :direct-standard-plain-slider-arithmetic
+                :full? false})
+              (slider-cache-profile-variant
+               {:variant :generic-rebuild-plain-slider-arithmetic
+                :full? false
+                :generic-protocol? true})
+              (slider-cache-profile-variant
+               {:variant :generic-retained-plain-slider-arithmetic
+                :full? false
+                :generic-protocol? true
+                :retained-generic? true})
+              (slider-cache-profile-variant
+               {:variant :direct-standard-trace-xr-block-slider-arithmetic
+                :full? true})]})
 
 (defn- wait-for-behavior-graph-traces!
   [session target timeout-ms]
@@ -682,6 +782,7 @@
          "large" (large-trace-bench)
          "incremental" (incremental-trace-bench)
          "trace-subscriptions" (trace-subscriptions-bench)
+         "slider-cache-profile" (slider-cache-profile-bench)
          "behavior-graph" (behavior-graph-bench
                            {:updates (parse-count (second args) 5)
                             :trace-timeout-ms (parse-count (nth args 2 nil)

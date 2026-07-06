@@ -16,6 +16,7 @@
 (def perform-boundary-effects effects/perform-boundary-effects)
 (def record-runtime-transaction graphp/record-runtime-transaction)
 (def assoc-graph-cell-value graphp/assoc-graph-cell-value)
+(def downstream-cell-ids graphp/downstream-cell-ids)
 (def settle-application-props program/settle-application-props)
 (def rebuild-program-state program-rebuild/rebuild-program-state)
 (def incremental-block-state program-rebuild/incremental-block-state)
@@ -54,14 +55,8 @@
 (defn annotate-widget-cell-values
   [state widget-id]
   (let [channels (vals (get-in state [:xr :widgets widget-id :channels]))
-        epoch (get-in state [:xr :widget-epochs widget-id])
-        cell-ids (distinct (mapcat (juxt :event-cell :view-cell) channels))]
-    (-> (reduce (fn [s cell-id]
-                  (if cell-id
-                    (assoc-graph-cell-value s cell-id)
-                    s))
-                state
-                cell-ids)
+        epoch (get-in state [:xr :widget-epochs widget-id])]
+    (-> state
         (update-in [:xr :widgets widget-id :channels]
                    (fn [channel-map]
                      (into {}
@@ -95,6 +90,17 @@
         n2 (core/run-tasks tasks n1)
         n3 (settle-application-props n2 [])]
     (assoc state :program/net n3)))
+
+(defn changed-candidate-cells
+  [program-net updates]
+  (downstream-cell-ids program-net (keep :cell-id updates)))
+
+(defn runtime-cycle-for-input
+  [state]
+  (if (or (seq (get-in state [:xr :launched]))
+          (seq (:trace/subscriptions state)))
+    (run-runtime-cycle state)
+    (perform-boundary-effects state)))
 
 (defn replay-widget-updates
   [state {:keys [widget-id updates]}]
@@ -145,13 +151,16 @@
     (let [before-net (:program/net state)
           cell-id (:cell-id input)
           update-value (:update input)
+          candidates (changed-candidate-cells before-net
+                                              [{:cell-id cell-id}])
           n3 (:program/net
               (apply-program-updates state [{:cell-id cell-id
                                              :update update-value}]))]
       (-> state
           (assoc :program/net n3)
+          (assoc :runtime/changed-candidate-cells candidates)
           (update :runtime/inputs (fnil conj []) input)
-          run-runtime-cycle
+          runtime-cycle-for-input
           (record-runtime-transaction before-net)))
 
       :xr/widget-event
@@ -176,9 +185,11 @@
                                        epoch
                                        (get latest-values channel-name))}))
                          channels))
+          candidates (changed-candidate-cells before-net updates)
           n3 (:program/net (apply-program-updates state updates))]
       (-> state
           (assoc :program/net n3)
+          (assoc :runtime/changed-candidate-cells candidates)
           (assoc-in [:xr :widget-epochs widget-id] epoch)
           (assoc-in [:xr :widget-latest widget-id] latest-values)
           (update :runtime/inputs (fnil conj [])
@@ -188,7 +199,7 @@
                          :channel channel
                          :epoch epoch
                          :updates updates))
-          run-runtime-cycle
+          runtime-cycle-for-input
           (annotate-widget-cell-values widget-id)
           (record-runtime-transaction before-net)))
 
@@ -204,9 +215,11 @@
                            (:event-cell channel-info)
                            widget-id
                            epoch)}
+          candidates (changed-candidate-cells before-net [update])
           n3 (:program/net (apply-program-updates state [update]))]
       (-> state
           (assoc :program/net n3)
+          (assoc :runtime/changed-candidate-cells candidates)
           (assoc-in [:xr :widget-epochs widget-id] epoch)
           (update-in [:xr :widget-latest widget-id] dissoc channel)
           (update :runtime/inputs (fnil conj [])
@@ -216,7 +229,7 @@
                          :channel channel
                          :epoch epoch
                          :updates [update]))
-          run-runtime-cycle
+          runtime-cycle-for-input
           (annotate-widget-cell-values widget-id)
           (record-runtime-transaction before-net)))
 

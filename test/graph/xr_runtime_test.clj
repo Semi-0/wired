@@ -1240,6 +1240,26 @@
           (is (< (long (get-in second-payload [:graph :change-token]))
                  (long (get-in third-payload [:graph :change-token])))))))))
 
+(deftest repeated-slider-events-do-not-duplicate-widget-graph-edges
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d)"
+                    "(-> (- (+ a c) b) d)"
+                    "(def-cell g)"
+                    "(trace d g)"
+                    "(io:xr g)"
+                    "(io:slider-panels a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
+    (let [before (count (get-in @session [:graph :edges]))]
+      (doseq [i (range 20)]
+        (runtime/commit-runtime-input! session
+                                       {:runtime/input :xr/widget-event
+                                        :widget-id "slider-panel-0"
+                                        :channel (["a" "b" "c"] (mod i 3))
+                                        :value (+ 10 i)}))
+      (is (= before (count (get-in @session [:graph :edges])))))))
+
 (deftest trace-installed-after-event-projection-traces-cell-not-projection
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
