@@ -77,7 +77,7 @@
            (str "[" index "]\n"
                 (render-value value viewport-size)
                 (when annotation
-                  (str "  " annotation))))
+                  (str "\n" annotation))))
          (visible-blocks blocks)))))
 
 (def ^:private viewport-keys

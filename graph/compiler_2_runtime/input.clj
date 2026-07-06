@@ -54,13 +54,31 @@
 (defn annotate-widget-cell-values
   [state widget-id]
   (let [channels (vals (get-in state [:xr :widgets widget-id :channels]))
+        epoch (get-in state [:xr :widget-epochs widget-id])
         cell-ids (distinct (mapcat (juxt :event-cell :view-cell) channels))]
-    (reduce (fn [s cell-id]
-              (if cell-id
-                (assoc-graph-cell-value s cell-id)
-                s))
-            state
-            cell-ids)))
+    (-> (reduce (fn [s cell-id]
+                  (if cell-id
+                    (assoc-graph-cell-value s cell-id)
+                    s))
+                state
+                cell-ids)
+        (update-in [:xr :widgets widget-id :channels]
+                   (fn [channel-map]
+                     (into {}
+                           (map (fn [[channel {:keys [event-cell view-cell]
+                                               :as info}]]
+                                  (let [cell-id (or event-cell view-cell)
+                                        content (when cell-id
+                                                  (net/network-cell-content
+                                                   (:program/net state)
+                                                   cell-id))]
+                                    [channel
+                                     (assoc info
+                                            :current
+                                            (graphp/display-widget-value
+                                             content)
+                                            :epoch epoch)])))
+                           channel-map))))))
 
 (defn apply-program-updates
   [state updates]

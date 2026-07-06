@@ -44,7 +44,16 @@ export const widgetsFromGraph = (graph) =>
   ]);
 
 export const graphWithWidgets = (graph, widgets) => {
-  const nodes = [...(graph.nodes || [])];
+  const widgetsByNodeId = Object.fromEntries(
+    Object.values(widgets || {})
+      .filter((widget) => widget.nodeId)
+      .map((widget) => [widget.nodeId, widget])
+  );
+  const nodes = (graph.nodes || []).map((node) =>
+    widgetsByNodeId[node.id]
+      ? { ...node, ui: widgetsByNodeId[node.id] }
+      : node
+  );
   const nodeIds = new Set(nodes.map((node) => node.id));
   for (const widget of Object.values(widgets || {})) {
     const id = widget.nodeId || `widget:${widget.widgetId}`;

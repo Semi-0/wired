@@ -191,7 +191,7 @@
                   {:blocks [{:index 0
                              :value 9
                              :annotation "[be:a @1]"}]})]
-    (is (str/includes? rendered "9  [be:a @1]"))))
+    (is (str/includes? rendered "9\n[be:a @1]"))))
 
 (deftest tui-renders-graph-with-mixed-string-and-keyword-node-ids
   (let [rendered (tui/render-value
@@ -350,11 +350,15 @@
                                          #{[node-id "slider-panel-0"]}]
                                 :timestamp #{{:input-id node-id
                                               :source "slider-panel-0"
+                                              :timestamp 3}
+                                             {:input-id :b
+                                              :source "slider-panel-0"
                                               :timestamp 3}}
                                 :source-state event/active-state}]}])]
     (is (= "[be:xr-trace @6]" trace-label))
     (is (str/includes? event-label "[event:primitive/derived@joined{"))
     (is (str/includes? event-label "/slider-panel-0@3"))
+    (is (str/includes? event-label "\n"))
     (is (not (str/includes? trace-label "#propagators.ids.NodeId")))
     (is (not (str/includes? trace-label ":trace/subscribe")))
     (is (not (str/includes? event-label "#propagators.ids.NodeId")))))

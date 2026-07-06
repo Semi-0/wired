@@ -250,15 +250,50 @@
              (= :xr/launch-trace (:boundary/kind effect)))
     (get-in effect [:boundary/payload :graph])))
 
+(defn- widget-id
+  [widget]
+  (or (:widgetId widget)
+      (:widget-id widget)
+      (:id widget)))
+
+(defn- graph-widget-ui
+  [widget]
+  (update widget :channels #(if (map? %) (vec (vals %)) (vec %))))
+
+(defn- graph-with-current-widgets
+  [graph widgets]
+  (let [widgets-by-id (into {}
+                            (map (fn [widget]
+                                   [(str (widget-id widget))
+                                    (graph-widget-ui widget)]))
+                            widgets)]
+    (update graph
+            :nodes
+            (fn [nodes]
+              (mapv (fn [node]
+                      (let [ui (:ui node)
+                            id (some-> (widget-id ui) str)]
+                        (if-let [widget (get widgets-by-id id)]
+                          (assoc node :ui widget)
+                          node)))
+                    nodes)))))
+
 (defn- latest-effect-payload
   [session]
-  (let [result (xr/handle-command! session {:op :xr/effects})]
+  (let [result (xr/handle-command! session {:op :xr/effects})
+        change-token (:runtime/commit-tick @session)
+        widgets (vals (:widgets result))]
     (when-let [graph (some launch-effect-graph (reverse (:effects result)))]
-      {:graph (assoc (xr/graph->json
-                      graph
-                      {:changed-node-ids (:changed-node-ids result)
-                       :changed-cell-ids (:changed-cells result)})
-                     :widgets (vals (:widgets result)))})))
+      {:graph (cond-> (assoc (xr/graph->json
+                               graph
+                               {:changed-node-ids (:changed-node-ids result)
+                                :changed-cell-ids (:changed-cells result)})
+                              :widgets widgets)
+                true
+                (graph-with-current-widgets widgets)
+
+                (seq (:changed-node-ids result))
+                (assoc :change-token change-token))})))
 
 (defn- start-effect-push!
   [session out]

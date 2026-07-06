@@ -212,13 +212,15 @@
                          (contains? % :source)
                          (contains? % :timestamp))
                    x))
-    (str "joined{"
-         (str/join ","
-                   (map evidence-timestamp-token
+    (let [evidence (map evidence-timestamp-token
                         (sort-by (juxt (comp pr-str :input-id)
                                        (comp pr-str :source))
-                                 x)))
-         "}")
+                                 x))]
+      (if (= 1 (count evidence))
+        (str "joined{" (first evidence) "}")
+        (str "joined{\n"
+             (str/join "\n" (map #(str "  " %) evidence))
+             "\n}")))
     (annotation-token x)))
 
 (defn- behavior-annotation-label
@@ -251,9 +253,11 @@
 
 (defn- event-annotation-label
   [{:keys [facts]}]
-  (str "[event:"
-       (str/join "," (map event-fact-label facts))
-       "]"))
+  (if (= 1 (count facts))
+    (str "[event:" (event-fact-label (first facts)) "]")
+    (str "[event:\n"
+         (str/join "\n" (map #(str "  " (event-fact-label %)) facts))
+         "\n]")))
 
 (defn format-annotations
   [annotations]

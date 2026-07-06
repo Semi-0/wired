@@ -10,6 +10,16 @@ const graphFromPayload = (payload) => {
 
 const widgetId = (ui) => ui?.widgetId || ui?.["widget-id"] || ui?.id;
 
+const channelEpoch = (channel) => {
+  const epoch = Number(channel?.epoch || 0);
+  return Number.isFinite(epoch) ? epoch : 0;
+};
+
+const nextChannelEpoch = (channel) => channelEpoch(channel) + 1;
+
+const widgetChannel = (widgets, widgetId, channelName) =>
+  (widgets?.[widgetId]?.channels || []).find((channel) => channel.channel === channelName);
+
 const setWidgetChannelValue = (widgets, widgetId, channelName, value) =>
   Object.fromEntries(
     Object.entries(widgets || {}).map(([id, widget]) => [
@@ -19,7 +29,11 @@ const setWidgetChannelValue = (widgets, widgetId, channelName, value) =>
             ...widget,
             channels: (widget.channels || []).map((channel) =>
               channel.channel === channelName
-                ? { ...channel, current: value }
+                ? {
+                    ...channel,
+                    current: value,
+                    epoch: nextChannelEpoch(channel),
+                  }
                 : channel
             ),
           }
@@ -27,7 +41,28 @@ const setWidgetChannelValue = (widgets, widgetId, channelName, value) =>
     ])
   );
 
-const mergeWidgets = (existing, incoming) => {
+const mergeWidgetChannel = (previousChannel, channel) => {
+  const incomingHasCurrent = channel.current !== null && channel.current !== undefined;
+  const previousEpoch = channelEpoch(previousChannel);
+  const incomingEpoch = channelEpoch(channel);
+  if (incomingEpoch < previousEpoch) {
+    const { current: _current, epoch: _epoch, ...rest } = channel;
+    return {
+      ...previousChannel,
+      ...rest,
+      current: previousChannel.current,
+      epoch: previousEpoch,
+    };
+  }
+  return {
+    ...previousChannel,
+    ...channel,
+    current: incomingHasCurrent ? channel.current : previousChannel?.current,
+    epoch: Math.max(previousEpoch, incomingEpoch),
+  };
+};
+
+export const mergeWidgets = (existing, incoming) => {
   const merged = { ...(existing || {}) };
   for (const [id, widget] of Object.entries(incoming || {})) {
     const previous = merged[id];
@@ -39,21 +74,14 @@ const mergeWidgets = (existing, incoming) => {
       ...widget,
       channels: (widget.channels || []).map((channel) => {
         const previousChannel = previousByChannel[channel.channel];
-        return {
-          ...previousChannel,
-          ...channel,
-          current:
-            previousChannel?.current === null || previousChannel?.current === undefined
-              ? channel.current
-              : previousChannel.current,
-        };
+        return mergeWidgetChannel(previousChannel, channel);
       }),
     };
   }
   return merged;
 };
 
-const graphWithWidgetValue = (graph, widgetId, channelName, value) => ({
+const graphWithWidgetValue = (graph, widgetId, channelName, value, epoch) => ({
   ...graph,
   nodes: (graph.nodes || []).map((node) => {
     const id = widgetIdOfNode(node);
@@ -64,7 +92,7 @@ const graphWithWidgetValue = (graph, widgetId, channelName, value) => ({
         ...node.ui,
         channels: (node.ui?.channels || []).map((channel) =>
           channel.channel === channelName
-            ? { ...channel, current: value }
+            ? { ...channel, current: value, epoch }
             : channel
         ),
       },
@@ -168,7 +196,8 @@ export const update = (model, msg) => {
     case "widget/input":
       {
         const widgets = setWidgetChannelValue(model.widgets, msg.widgetId, msg.channel, msg.value);
-        const graph = graphWithWidgetValue(model.graph, msg.widgetId, msg.channel, msg.value);
+        const epoch = channelEpoch(widgetChannel(widgets, msg.widgetId, msg.channel));
+        const graph = graphWithWidgetValue(model.graph, msg.widgetId, msg.channel, msg.value, epoch);
         return [
           { ...model, widgets, graph, status: `slider ${msg.widgetId}/${msg.channel}: ${msg.value}` },
           [

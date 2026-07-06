@@ -7,6 +7,7 @@
             [propagators.cells.value :as value]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace]))
 
@@ -16,7 +17,18 @@
 (defn display-widget-value
   [v]
   (when-not (value/unusable? v)
-    (semantic-repl/display-cell-value v)))
+    (cond
+      (or (event/event-content? v)
+          (event/event-fact? v)
+          (event/event-projection? v))
+      (let [values (vals (event/active-values v))]
+        (cond
+          (empty? values) nil
+          (= 1 (count values)) (first values)
+          :else (vec values)))
+
+      :else
+      (semantic-repl/display-cell-value v))))
 
 (defn widget-node-id
   [widget-id]
@@ -143,7 +155,8 @@
                                  [:channel
                                   :view-label
                                   :event-label
-                                  :current])
+                                  :current
+                                  :epoch])
                    channels)})
 
 (defn add-widget-to-graph

@@ -1140,10 +1140,40 @@
     (is (wait-for-xr-launch session))
     (let [payload (#'xr-server/latest-effect-payload session)
           widgets (get-in payload [:graph :widgets])
+          widget-node (some #(when (= "slider-panel-0"
+                                      (or (get-in % [:ui :widgetId])
+                                          (get-in % [:ui :widget-id])
+                                          (get-in % [:ui :id])))
+                               %)
+                            (get-in payload [:graph :nodes]))
           d-id (cell-id session "d")
           d-content (net/network-cell-content (:program/net @session) d-id)
           labels (set (keep #(get-in % [:label]) (get-in payload [:graph :nodes])))]
       (is (some #(= "slider-panel-0" (:id %)) widgets))
+      (is (= {"a" 10 "b" 4 "c" 3}
+             (->> widgets
+                  (filter #(= "slider-panel-0" (:id %)))
+                  first
+                  :channels
+                  vals
+                  (map (juxt :channel :current))
+                  (into {}))))
+      (is (= {"a" 3 "b" 3 "c" 3}
+             (->> widgets
+                  (filter #(= "slider-panel-0" (:id %)))
+                  first
+                  :channels
+                  vals
+                  (map (juxt :channel :epoch))
+                  (into {}))))
+      (is (= {"a" 10 "b" 4 "c" 3}
+             (->> (get-in widget-node [:ui :channels])
+                  (map (juxt :channel :current))
+                  (into {}))))
+      (is (= {"a" 3 "b" 3 "c" 3}
+             (->> (get-in widget-node [:ui :channels])
+                  (map (juxt :channel :epoch))
+                  (into {}))))
       (is (= [9] (vec (vals (event/active-values d-content)))))
       (is (every? labels ["out:trace-target" "a" "b" "c" "+" "-"])))
     (runtime/commit-runtime-input! session
@@ -1171,6 +1201,44 @@
       (is (every? labels ["out:trace-target" "a" "b" "c" "+" "-"]))
       (is (contains? changed-labels "a"))
       (is d-node-changed?))))
+
+(deftest xr-effect-payload-change-token-retriggers-repeated-event-pulses
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d)"
+                    "(-> (- (+ a c) b) d)"
+                    "(def-cell g)"
+                    "(trace d g)"
+                    "(io:xr g)"
+                    "(io:slider-panels a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (is (wait-for-xr-launch session))
+    (doseq [[channel value] [["a" 10] ["b" 4] ["c" 3]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (is (wait-for-xr-launch session))
+    (let [first-payload (#'xr-server/latest-effect-payload session)]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel "a"
+                                      :value 11})
+      (let [second-payload (#'xr-server/latest-effect-payload session)]
+        (runtime/commit-runtime-input! session
+                                       {:runtime/input :xr/widget-event
+                                        :widget-id "slider-panel-0"
+                                        :channel "a"
+                                        :value 12})
+        (let [third-payload (#'xr-server/latest-effect-payload session)]
+          (is (= (get-in second-payload [:graph :changed-node-ids])
+                 (get-in third-payload [:graph :changed-node-ids])))
+          (is (not= first-payload second-payload))
+          (is (not= second-payload third-payload))
+          (is (< (long (get-in second-payload [:graph :change-token]))
+                 (long (get-in third-payload [:graph :change-token])))))))))
 
 (deftest trace-installed-after-event-projection-traces-cell-not-projection
   (let [session (runtime/new-session)]
