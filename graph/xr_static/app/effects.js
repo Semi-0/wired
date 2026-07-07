@@ -47,6 +47,15 @@ export const animationLoop = ({ renderer, render, detectPinch }) =>
     }
 
     env.enterXr = async () => {
+      if (renderer.enterXr) {
+        try {
+          await renderer.enterXr();
+          dispatch(Msg.XrEntered());
+        } catch (error) {
+          dispatch(Msg.XrError(error.message));
+        }
+        return;
+      }
       if (!navigator.xr) {
         dispatch(Msg.XrError("navigator.xr is not available"));
         return;
@@ -62,6 +71,17 @@ export const animationLoop = ({ renderer, render, detectPinch }) =>
         dispatch(Msg.XrError(error.message));
       }
     };
+
+    if (renderer.startAnimationLoop) {
+      renderer.startAnimationLoop(dispatch, () => {
+        const time = performance.now();
+        const dt = Math.max(0.001, Math.min((time - last) / 1000, 0.05));
+        last = time;
+        dispatch(Msg.Tick(dt));
+        render(env.model);
+      });
+      return;
+    }
 
     renderer.setAnimationLoop((time, frame) => {
       const dt = Math.max(0.001, Math.min((time - last) / 1000, 0.05));

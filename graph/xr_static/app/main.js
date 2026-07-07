@@ -2,7 +2,7 @@ import { batch } from "./combinators.js";
 import { bindControls, connectSocket, animationLoop } from "./effects.js";
 import { initialModel } from "./model.js";
 import { Msg } from "./msg.js";
-import { createRenderer } from "./render.js";
+import { createRenderer } from "./babylon-render.js";
 import { update } from "./update.js";
 
 const env = {
