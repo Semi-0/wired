@@ -13,7 +13,9 @@
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]
+            [graph.xr-server :as xr-server]
             [graph.xr-runtime :as xr]
+            [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as cenv]
             [propagators.core :as core]
@@ -195,6 +197,21 @@
                              :value 9
                              :annotation "[be:a @1]"}]})]
     (is (str/includes? rendered "9\n[be:a @1]"))))
+
+(deftest tui-render-view-includes-runtime-error-panel
+  (let [rendered (tui/render-view
+                  {:errors [{:source {:op :tui/read-view
+                                      :phase :xr/start}
+                             :class "clojure.lang.ExceptionInfo"
+                             :message "failed to start XR"
+                             :data {:port 5000}}]
+                   :blocks [{:index 0
+                             :value 7}]})]
+    (is (str/includes? rendered "runtime errors"))
+    (is (str/includes? rendered "op=:tui/read-view phase=:xr/start"))
+    (is (str/includes? rendered "failed to start XR"))
+    (is (str/includes? rendered "data: {:port 5000}"))
+    (is (str/includes? rendered "[0]"))))
 
 (deftest tui-renders-graph-with-mixed-string-and-keyword-node-ids
   (let [rendered (tui/render-value
@@ -422,7 +439,12 @@
     (is (str/includes? script "commit/ms"))
     (is (str/includes? script "propagation/ms"))
     (is (str/includes? script "effects/ms"))
-    (is (str/includes? script "xr runtime/ms"))))
+    (is (str/includes? script "xr runtime/ms"))
+    (is (str/includes? script "set multiplot layout 2,2 rowsfirst"))
+    (is (str/includes? script "unset multiplot"))
+    (is (= 4 (count (re-seq #"set title 'runtime rate:" script))))
+    (is (= 4 (count (re-seq #"plot \$runtime using 1:" script))))
+    (is (not (str/includes? script ", \\")))))
 
 (deftest temperature-plot-text-fallback-renders-all-runtime-rates
   (let [samples [{:phase :commit/total :queued 1 :ms 1.0 :at 1000}
@@ -478,6 +500,16 @@
     (is (= [9 0] (mapv :queue/p95 commit-rows)))
     (is (= [0 0] (mapv :queue/p95 boundary-rows)))))
 
+(deftest server-dashboard-sizes-rate-plot-from-window
+  (let [short (#'dashboard/rate-plot-size {:width 120 :height 18})
+        medium (#'dashboard/rate-plot-size {:width 120 :height 30})
+        tall (#'dashboard/rate-plot-size {:width 120 :height 100})]
+    (is (= 116 (:width short)))
+    (is (= 10 (:height short)))
+    (is (= 20 (:height medium)))
+    (is (= 36 (:height tall)))
+    (is (< (:height medium) (:width medium)))))
+
 (deftest server-dashboard-renders-runtime-rates-before-phase-table
   (let [content (with-redefs [temperature-plot/gnuplot-command
                               (constantly nil)]
@@ -496,6 +528,25 @@
     (is (< (str/index-of content "runtime rates")
            (str/index-of content "phase details")))
     (is (not (str/includes? content "recent load trends")))))
+
+(deftest server-dashboard-passes-window-sized-plot-to-renderer
+  (let [plot-opts (atom nil)
+        content (with-redefs [temperature-plot/gnuplot-rate-plot
+                              (fn [opts]
+                                (reset! plot-opts opts)
+                                "plot")]
+                  (#'dashboard/temperature-content
+                   {:history {}
+                    :rate-history [{:second 0
+                                    :commit 0.0
+                                    :propagation 0.0
+                                    :effects 0.0
+                                    :xr 0.0}]
+                    :window-size {:width 120
+                                  :height 30}}))]
+    (is (str/includes? content "plot"))
+    (is (= 116 (:width @plot-opts)))
+    (is (= 20 (:height @plot-opts)))))
 
 (deftest server-dashboard-retains-runtime-rate-history-across-quiet-ticks
   (let [history1 (#'dashboard/append-rate-history
@@ -546,6 +597,47 @@
     (is (= :clients (:view clients)))
     (is (= :xr (:view xr)))
     (is (= :temperature (:view temperature)))))
+
+(deftest server-transport-normalizes-cell-records
+  (let [transported (#'server/transport-value
+                     {:effect {:payload (cell/cell {:a 1} 1)}
+                      :net net/empty-net})]
+    (is (= {:effect {:payload {:content {:a 1}
+                               :strongest 1}}
+            :net {:runtime/network true
+                  :cells 0
+                  :props 0}}
+           transported))
+    (is (not (str/includes? (pr-str transported)
+                            "propagators.cells.cell.Cell")))
+    (is (not (str/includes? (pr-str transported)
+                            "propagators.network.Net")))))
+
+(deftest xr-startup-error-is-visible-without-breaking-tui-read
+  (let [session (runtime/new-session)
+        server-state {:session session
+                      :xr-state (atom nil)
+                      :xr-port 5000}]
+    (runtime/register-tui! session {:client-id "A"})
+    (swap! session assoc-in
+           [:xr :effects]
+           [{:boundary/port :xr
+             :boundary/kind :xr/launch-trace}])
+    (let [response (with-redefs [xr-server/start-server
+                                 (fn [& _]
+                                   (throw (ex-info "failed to start XR"
+                                                   {:port 5000})))]
+                     (#'server/handle-runtime-command!
+                      server-state
+                      {:op :tui/read-view
+                       :client-id "A"}))
+          view (runtime/read-tui-view @session {:client-id "A"})
+          rendered (tui/render-view view)]
+      (is (:ok response))
+      (is (= "failed to start XR"
+             (-> @session :runtime/errors peek :message)))
+      (is (str/includes? rendered "runtime errors"))
+      (is (str/includes? rendered "failed to start XR")))))
 
 (deftest tui-slider-panel-events-feed-default-arithmetic
   (let [session (runtime/new-session)]

@@ -14,6 +14,7 @@
 
 (def new-session state/new-session)
 (def ensure-session-state! state/ensure-session-state!)
+(def record-runtime-error! state/record-runtime-error!)
 (def default-xr-client-id state/default-xr-client-id)
 (def compile-source! program/compile-source!)
 (def list-cells cells/list-cells)

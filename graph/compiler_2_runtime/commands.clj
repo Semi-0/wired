@@ -65,6 +65,7 @@
       (schedule-trace-refreshes! session)
       response)
     (catch Throwable t
+      (state/record-runtime-error! session {:op op} t)
       {:ok false
        :error (ex-message t)
        :data (ex-data t)})))

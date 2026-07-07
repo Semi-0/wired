@@ -134,6 +134,28 @@
     (throw (ex-info "no compiled source in runtime session" {})))
   state)
 
+(defn runtime-error-entry
+  [source throwable]
+  (cond-> {:source source
+           :message (ex-message throwable)
+           :class (some-> throwable class .getName)}
+    (ex-data throwable) (assoc :data (ex-data throwable))))
+
+(defn append-runtime-error
+  [state entry]
+  (update state :runtime/errors
+          (fn [errors]
+            (->> (conj (vec errors) (assoc entry :at (System/currentTimeMillis)))
+                 (take-last 20)
+                 vec))))
+
+(defn record-runtime-error!
+  [session source throwable]
+  (locking session
+    (ensure-session-state! session)
+    (swap! session append-runtime-error
+           (runtime-error-entry source throwable))))
+
 (defn labels
   [state]
   (let [compiled (:compiled state)

@@ -125,7 +125,13 @@
       (.submit worker-executor
                ^Runnable
                  (fn []
-                   (publish-result! session (compute-result snapshot)))))
+                   (try
+                     (publish-result! session (compute-result snapshot))
+                     (catch Throwable t
+                       (state/record-runtime-error!
+                        session
+                        {:phase :xr/trace-subscription}
+                        t))))))
     (count @snapshots)))
 
 (defn refresh-now!
@@ -138,5 +144,11 @@
          (reset! snapshots snapshots')
          state')))
     (doseq [snapshot @snapshots]
-      (publish-result! session (compute-result snapshot)))
+      (try
+        (publish-result! session (compute-result snapshot))
+        (catch Throwable t
+          (state/record-runtime-error!
+           session
+           {:phase :xr/trace-subscription}
+           t))))
     (count @snapshots)))

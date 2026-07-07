@@ -6,8 +6,10 @@
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.xr-server :as xr-server]
+            [propagators.cells.cell :as cell]
             [propagators.graph :as pgraph]
-            [propagators.ids :as ids])
+            [propagators.ids :as ids]
+            [propagators.network :as net])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter
             PushbackReader]
            [java.lang Character$UnicodeBlock]
@@ -31,9 +33,21 @@
 (defn- transport-value [value]
   (walk/postwalk
    (fn [x]
-     (if (or (ids/node-id? x)
-             (pgraph/node? x))
+     (cond
+       (or (ids/node-id? x)
+           (pgraph/node? x))
        (pr-str x)
+
+       (net/network? x)
+       {:runtime/network true
+        :cells (count (:env x))
+        :props (count (get-in x [:graph :propagators]))}
+
+       (cell/cell? x)
+       {:content (:content x)
+        :strongest (:strongest x)}
+
+       :else
        x))
    value))
 
@@ -100,9 +114,17 @@
 (defn- handle-runtime-command!
   [server command]
   (let [response (runtime/handle-command! (:session server) command)]
-    (ensure-xr-server! server)
-    (ensure-xr-server-soon! server)
-    response))
+    (try
+      (ensure-xr-server! server)
+      (ensure-xr-server-soon! server)
+      response
+      (catch Throwable t
+        (swap! (:xr-state server) assoc :last-error (ex-message t))
+        (runtime/record-runtime-error! (:session server)
+                                       {:op (:op command)
+                                        :phase :xr/start}
+                                       t)
+        response))))
 
 (defn- handle-client
   [server ^Socket socket]

@@ -35,6 +35,14 @@
 
 (def rate-window-ms 1000)
 
+(def min-rate-plot-height 10)
+
+(def max-rate-plot-height 36)
+
+(def rate-plot-width-padding 4)
+
+(def rate-plot-height-reserve 10)
+
 (defn- cap-history
   [rows]
   (let [rows (vec rows)]
@@ -97,18 +105,38 @@
            (assoc (plot/rate-row samples rate-window-ms)
                   :second next-second)))))
 
+(defn- rate-plot-width
+  [window-size]
+  (max 60 (- (long (or (:width window-size) 80))
+             rate-plot-width-padding)))
+
+(defn- rate-plot-height
+  [window-size width]
+  (let [terminal-height (long (or (:height window-size) 40))
+        available-height (- terminal-height rate-plot-height-reserve)]
+    (max min-rate-plot-height
+         (min width
+              max-rate-plot-height
+              available-height))))
+
+(defn- rate-plot-size
+  [window-size]
+  (let [width (rate-plot-width window-size)]
+    {:width width
+     :height (rate-plot-height window-size width)}))
+
 (defn- temperature-content
   [{:keys [history rate-history window-size]}]
-  (str "temperature\n"
-       "phase is the runtime work category; samples/s is activity in the last refresh\n\n"
-       "runtime rates\n"
-       (plot/gnuplot-rate-plot
-       {:rows rate-history
-         :window-ms rate-window-ms
-         :width (max 60 (- (long (or (:width window-size) 80)) 4))
-         :height 16})
-       "\n\nphase details\n"
-       (plot/phase-table history phase-label rate-window-ms)))
+  (let [{:keys [width height]} (rate-plot-size window-size)]
+    (str "temperature\n"
+         "runtime rates\n"
+         (plot/gnuplot-rate-plot
+          {:rows rate-history
+           :window-ms rate-window-ms
+           :width width
+           :height height})
+         "\n\nphase details\n"
+         (plot/phase-table history phase-label rate-window-ms))))
 
 (defn- block-preview
   [view]

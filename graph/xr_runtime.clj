@@ -142,6 +142,7 @@
       {:kind "value"
        :value (semantic-repl/display-cell-value v)})))
 
+;; this is awful
 (defn- node-kind
   [label ui]
   (let [label (str label)]

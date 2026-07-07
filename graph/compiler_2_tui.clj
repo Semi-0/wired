@@ -132,17 +132,51 @@
     (pop (vec blocks))
     blocks))
 
+(defn- error-source-label
+  [source]
+  (cond
+    (map? source)
+    (str/join " "
+              (keep (fn [k]
+                      (when-let [v (get source k)]
+                        (str (name k) "=" v)))
+                    [:op :phase]))
+
+    (some? source) (str source)
+    :else "runtime"))
+
+(defn- render-runtime-error
+  [{:keys [source message class data]}]
+  (str "- " (error-source-label source)
+       (when class (str " " class))
+       (when message (str "\n  " message))
+       (when (seq data) (str "\n  data: " (pr-str data)))))
+
+(defn- render-error-panel
+  [errors]
+  (when (seq errors)
+    (str "runtime errors\n"
+         (str/join "\n"
+                   (map render-runtime-error (take-last 5 errors))))))
+
+(defn- render-blocks
+  [blocks viewport-size]
+  (str/join
+   "\n\n"
+   (map (fn [{:keys [index value annotation]}]
+          (str "[" index "]\n"
+               (render-value value viewport-size)
+               (when annotation
+                 (str "\n" annotation))))
+        (visible-blocks blocks))))
+
 (defn render-view
   ([view] (render-view view nil))
-  ([{:keys [blocks]} viewport-size]
-   (str/join
-    "\n\n"
-    (map (fn [{:keys [index value annotation]}]
-           (str "[" index "]\n"
-                (render-value value viewport-size)
-                (when annotation
-                  (str "\n" annotation))))
-         (visible-blocks blocks)))))
+  ([{:keys [blocks errors]} viewport-size]
+   (str/join "\n\n"
+             (remove str/blank?
+                     [(or (render-error-panel errors) "")
+                      (render-blocks blocks viewport-size)]))))
 
 (def ^:private viewport-keys
   {:line-up ["up"]

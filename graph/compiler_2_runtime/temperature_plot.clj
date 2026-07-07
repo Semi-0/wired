@@ -165,23 +165,24 @@
          height 18}}]
   (let [data (if rows
                (rate-rows-plot-data rows)
-               (rate-plot-data samples window-ms))
-        plot-lines (->> rate-categories
-                        (map-indexed
-                         (fn [idx {:keys [label]}]
-                           (format "$runtime using 1:%d with lines title '%s'"
-                                   (+ 2 idx)
-                                   label)))
-                        (str/join ", \\\n     "))]
+               (rate-plot-data samples window-ms))]
     (str "set terminal dumb " width " " height "\n"
-         "set title 'runtime temperature rates'\n"
-         "set xlabel 'seconds'\n"
+         "set xlabel 'tick'\n"
          "set ylabel 'events/ms'\n"
-         "set key outside\n"
+         "set key off\n"
+         "set multiplot layout 2,2 rowsfirst\n"
          "$runtime << EOD\n"
          data "\n"
          "EOD\n"
-         "plot " plot-lines "\n")))
+         (->> rate-categories
+              (map-indexed
+               (fn [idx {:keys [label]}]
+                 (str "set title 'runtime rate: " label "'\n"
+                      (format "plot $runtime using 1:%d with lines title '%s'\n"
+                              (+ 2 idx)
+                              label))))
+              (str/join "\n"))
+         "\nunset multiplot\n")))
 
 (defn- executable-file?
   [path]

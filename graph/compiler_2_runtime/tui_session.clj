@@ -314,6 +314,7 @@
        :view-id (pr-str (:view-id tui))
        :changed-cells (mapv pr-str (:runtime/changed-cells state))
        :changed-node-ids (mapv pr-str (:runtime/changed-node-ids state))
+       :errors (vec (:runtime/errors state))
        :blocks (mapv (fn [block]
                        (let [raw-value (block-view-content state block)]
                          (annotations/annotate-block-view
