@@ -8,13 +8,39 @@
   (:import [java.io BufferedInputStream BufferedOutputStream ByteArrayOutputStream]
            [java.net ServerSocket Socket URLDecoder]
            [java.nio ByteBuffer]
-           [java.security MessageDigest]
+           [java.security KeyStore MessageDigest]
            [java.util Base64]
-           [java.util.concurrent Executors TimeUnit]))
+           [java.util.concurrent Executors TimeUnit]
+           [javax.net.ssl KeyManagerFactory SSLContext SSLHandshakeException]))
 
 (def default-host "127.0.0.1")
+(def lan-host "0.0.0.0")
 (def default-port 45666)
+(def default-keystore-type "PKCS12")
 (def websocket-guid "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+
+(defn- ssl-context
+  [{:keys [keystore keystore-password keystore-type]}]
+  (when (str/blank? keystore)
+    (throw (ex-info "HTTPS requires --keystore" {})))
+  (let [password (char-array (or keystore-password ""))
+        store (KeyStore/getInstance (or keystore-type default-keystore-type))
+        kmf (KeyManagerFactory/getInstance (KeyManagerFactory/getDefaultAlgorithm))]
+    (with-open [in (io/input-stream keystore)]
+      (.load store in password))
+    (.init kmf store password)
+    (doto (SSLContext/getInstance "TLS")
+      (.init (.getKeyManagers kmf) nil nil))))
+
+(defn- server-socket
+  [port host tls]
+  (let [address (java.net.InetAddress/getByName host)]
+    (if (:https? tls)
+      (.createServerSocket (.getServerSocketFactory (ssl-context tls))
+                           port
+                           50
+                           address)
+      (ServerSocket. port 50 address))))
 
 (defn- daemon-thread
   [name f]
@@ -358,43 +384,50 @@
   (daemon-thread
    "xr-client"
    (fn []
-     (with-open [s socket
-                 in (BufferedInputStream. (.getInputStream s))
-                 out (BufferedOutputStream. (.getOutputStream s))]
-       (let [request (parse-request in)]
-         (cond
-           (nil? request) nil
+     (try
+       (with-open [s socket
+                   in (BufferedInputStream. (.getInputStream s))
+                   out (BufferedOutputStream. (.getOutputStream s))]
+         (let [request (parse-request in)]
+           (cond
+             (nil? request) nil
 
-           (and (= (:path request) "/ws")
-                (websocket-request? request))
-           (do (write-websocket-handshake out
-                                          (get-in request [:headers
-                                                           "sec-websocket-key"]))
-               (websocket-loop session in out))
+             (and (= (:path request) "/ws")
+                  (websocket-request? request))
+             (do (write-websocket-handshake out
+                                            (get-in request [:headers
+                                                             "sec-websocket-key"]))
+                 (websocket-loop session in out))
 
-           (= "GET" (:method request))
-           (if-let [body (static-bytes (:path request))]
+             (= "GET" (:method request))
+             (if-let [body (static-bytes (:path request))]
+               (write-response out
+                               "200 OK"
+                               {"Content-Type" (content-type (:path request))}
+                               body)
+               (write-response out
+                               "404 Not Found"
+                               {"Content-Type" "text/plain; charset=utf-8"}
+                               "not found"))
+
+             :else
              (write-response out
-                             "200 OK"
-                             {"Content-Type" (content-type (:path request))}
-                             body)
-             (write-response out
-                             "404 Not Found"
+                             "405 Method Not Allowed"
                              {"Content-Type" "text/plain; charset=utf-8"}
-                             "not found"))
-
-           :else
-           (write-response out
-                           "405 Method Not Allowed"
-                           {"Content-Type" "text/plain; charset=utf-8"}
-                           "method not allowed")))))))
+                             "method not allowed"))))
+       (catch SSLHandshakeException _
+         nil)))))
 
 (defn start-server
   ([] (start-server default-port))
   ([port] (start-server port (runtime/new-session)))
-  ([port session]
+  ([port session] (start-server port session default-host))
+  ([port session host] (start-server port session host nil))
+  ([port session host tls]
    (let [session (or session (runtime/new-session))
-         server (ServerSocket. port 50 (java.net.InetAddress/getByName default-host))
+         host (or host default-host)
+         tls (or tls {})
+         server (server-socket port host tls)
          running? (atom true)
          accept-thread
          (daemon-thread
@@ -406,17 +439,50 @@
                 (catch java.net.SocketException _ nil)))))]
      {:server server
       :session session
+      :host host
+      :scheme (if (:https? tls) "https" "http")
       :port (.getLocalPort server)
       :close (fn []
                (reset! running? false)
                (.close server)
                (.interrupt ^Thread accept-thread))})))
 
+(defn- parse-server-args
+  [args]
+  (loop [args args
+         opts {:port default-port
+               :host default-host
+               :tls {}}]
+    (if-let [arg (first args)]
+      (case arg
+        ("--host" "-host")
+        (recur (nnext args) (assoc opts :host (second args)))
+
+        ("--lan" "-lan")
+        (recur (next args) (assoc opts :host lan-host))
+
+        ("--port" "-port")
+        (recur (nnext args) (assoc opts :port (Long/parseLong (second args))))
+
+        ("--https" "-https")
+        (recur (next args) (assoc-in opts [:tls :https?] true))
+
+        ("--keystore" "-keystore")
+        (recur (nnext args) (assoc-in opts [:tls :keystore] (second args)))
+
+        ("--keystore-password" "-keystore-password")
+        (recur (nnext args) (assoc-in opts [:tls :keystore-password] (second args)))
+
+        ("--keystore-type" "-keystore-type")
+        (recur (nnext args) (assoc-in opts [:tls :keystore-type] (second args)))
+
+        (recur (next args) (assoc opts :port (Long/parseLong arg))))
+      opts)))
+
 (defn -main
   [& args]
-  (let [port (if-let [p (first args)]
-               (Long/parseLong p)
-               default-port)
-        server (start-server port)]
-    (println (str "XR runtime on http://" default-host ":" (:port server) "/"))
+  (let [{:keys [port host tls]} (parse-server-args args)
+        server (start-server port nil host tls)]
+    (println (str "XR runtime on " (:scheme server) "://" host ":"
+                  (:port server) "/"))
     @(promise)))
