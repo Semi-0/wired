@@ -19,11 +19,6 @@
   [block]
   [(:client-id block) (:index block)])
 
-(defn- topology-props
-  [program-net props]
-  (let [applications (set (program/retained-application-props program-net))]
-    (filterv (complement applications) props)))
-
 (defn- compile-topology-form
   [state block epoch source]
   (try
@@ -44,12 +39,11 @@
                     {:net program-net-input
                      :seed [:runtime/block (:order block) (:epoch block)]
                      :reuse-existing-bindings? true})
-          props (topology-props (:net compiled) (:props compiled))
           [state program-net] (temperature/run-propagators
                                state
                                :propagation/compile-topology
                                (:net compiled)
-                               props)]
+                               (:props compiled))]
       (-> state
           (assoc :program/net program-net
                  :program/env (:env compiled)
@@ -64,7 +58,8 @@
     (catch Throwable t
       (assoc-in state
                 [:program/results (result-key block)]
-                {:error (ex-message t)
+                {:error (or (ex-message t) (str (class t)))
+                 :class (str (class t))
                  :data (ex-data t)}))))
 
 (defn- rebuild-topology-block
@@ -291,7 +286,8 @@
     (catch Throwable t
       (assoc-in state
                 [:program/results (result-key block)]
-                {:error (ex-message t)
+                {:error (or (ex-message t) (str (class t)))
+                 :class (str (class t))
                  :data (ex-data t)}))))
 
 (defn incremental-block-state

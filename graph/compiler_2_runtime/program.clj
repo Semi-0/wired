@@ -212,6 +212,12 @@
     (cenv/bind-at env 'io:slider-panel-name
                   (runtime-widget/io-slider-panel-name-operator (boundary-outbox-id))
                   0)
+    (cenv/bind-at env 'runtime:clients
+                  (runtime-ops/runtime-clients-operator)
+                  0)
+    (cenv/bind-at env 'runtime:client-pipe
+                  (runtime-ops/runtime-client-pipe-operator)
+                  0)
     (cenv/bind-at env 'translate (runtime-ops/translate-operator) 0)
     (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
       (cenv/bind-at env 'block (runtime-ops/block-target-operator (boundary-outbox-id)
@@ -313,7 +319,8 @@
     (catch Throwable t
       (assoc-in state
                 [:program/results [(:client-id block) (:index block)]]
-                {:error (ex-message t)
+                {:error (or (ex-message t) (str (class t)))
+                 :class (str (class t))
                  :data (ex-data t)}))))
 
 (defn rebuild-block

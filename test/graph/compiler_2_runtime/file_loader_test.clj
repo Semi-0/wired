@@ -3,6 +3,7 @@
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime.file-loader :as loader]
             [graph.compiler-2-runtime.tui-annotations :as annotations]
+            [graph.compiler-2-runtime.web-bridge :as bridge]
             [propagators.compiler-2.env :as cenv]
             [propagators.datastructures.event :as event]
             [propagators.network :as net]))
@@ -44,3 +45,22 @@
 (deftest lain-source-normalizer-accepts-consecutive-top-level-forms
   (is (= ['(def-cell x) '(<-> 1 x)]
          (loader/source-forms "(def-cell x)\n(<-> 1 x)"))))
+
+(deftest lain-loader-preserves-block-by-block-def-net-application
+  (let [session (runtime/new-session)
+        source "(def-cell clients)
+                (runtime:clients clients)
+                (def-net first-client [clients] [out]
+                  (p:car out clients))
+                (def-cell f)
+                (first-client clients f)"]
+    (loader/load-source! session source {:client-id "file-test"})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :cell-message
+                                    :cell-id (bridge/client-list-source-id)
+                                    :update (bridge/linked-list-value ["A" "B"])})
+    (is (= (bridge/client-handle "A")
+           (net/network-cell-strongest
+            (:program/net @session)
+            (cenv/binding-id
+             (cenv/lookup (:program/env @session) 'f)))))))
