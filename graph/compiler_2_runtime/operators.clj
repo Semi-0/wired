@@ -1,6 +1,7 @@
 (ns graph.compiler-2-runtime.operators
   "Compiler-2 runtime operator registry facade."
-  (:require [graph.compiler-2-runtime.operators.trace :as trace]
+  (:require [graph.compiler-2-runtime.operators.list-text :as list-text]
+            [graph.compiler-2-runtime.operators.trace :as trace]
             [graph.compiler-2-runtime.operators.tui :as tui]
             [graph.compiler-2-runtime.operators.web-bridge :as web-bridge]
             [graph.compiler-2-runtime.operators.xr :as xr]))
@@ -20,3 +21,5 @@
 
 (def runtime-clients-operator web-bridge/runtime-clients-operator)
 (def runtime-client-pipe-operator web-bridge/runtime-client-pipe-operator)
+
+(def list-text-events-operator list-text/list-text-events-operator)

@@ -5,6 +5,7 @@
             [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.application :as compiler-app]
             [propagators.compiler-2.main :as compiler]
             [propagators.core :as core]
             [propagators.message :refer [message]]
@@ -14,6 +15,14 @@
 
 (def seed-appended-block-topology-state
   topology/seed-appended-block-topology-state)
+
+(defn- expose-application-boundary-outputs
+  [program-net]
+  (net/update-net-dict-entry
+   program-net
+   compiler-app/application-extra-output-ids-key
+   (fnil conj #{})
+   (program/boundary-outbox-id)))
 
 (defn- result-key
   [block]
@@ -29,10 +38,11 @@
                                    (:program/env state)
                                    graph-id
                                    (:client-id block))
-          program-net-input (nb/install-cell (:program/net state)
-                                             graph-id
-                                             (:graph state)
-                                             (:graph state))
+          program-net-input (-> (:program/net state)
+                                expose-application-boundary-outputs
+                                (nb/install-cell graph-id
+                                                 (:graph state)
+                                                 (:graph state)))
           compiled (compiler/compile-source
                     source
                     env
@@ -256,6 +266,7 @@
                                    graph-id
                                    (:client-id block))
           program-net-input (-> (:program/net state)
+                                expose-application-boundary-outputs
                                 (nb/ensure-cell (program/boundary-outbox-id))
                                 (nb/install-cell graph-id
                                                  (:graph state)

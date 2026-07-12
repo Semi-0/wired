@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.walk :as walk]
             [graph.compiler-2-runtime :as runtime]
+            [graph.compiler-2-runtime.file-loader :as file-loader]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.xr-server :as xr-server]
             [propagators.cells.cell :as cell]
@@ -20,6 +21,7 @@
 (def default-host "127.0.0.1")
 (def default-port 45555)
 (def default-udp-port default-port)
+(def default-load-blocks 1)
 (def ^:private max-udp-packet-size 65507)
 (def ^:private temperature-log-interval-ms 5000)
 (def ^:dynamic *temperature-logger-enabled?* true)
@@ -113,9 +115,47 @@
                (recur (dec remaining)))))
          (swap! xr-state dissoc :watching?))))))
 
+(defn- load-file-response!
+  [server {:keys [file client-id] :as command}]
+  (when-not file
+    (throw (ex-info "compile/load-file requires :file" {:command command})))
+  (let [loaded (file-loader/load-file! (:session server)
+                                       file
+                                       (cond-> {}
+                                         client-id
+                                         (assoc :client-id client-id)))]
+    {:ok true
+     :result (dissoc loaded :session)}))
+
+(defn- prepare-load-client!
+  [server {:keys [load-client-id load-blocks]}]
+  (when load-client-id
+    (runtime/register-tui! (:session server) {:client-id load-client-id})
+    (dotimes [_ (max 0 (long (or load-blocks default-load-blocks)))]
+      (runtime/append-tui-block! (:session server)
+                                 {:client-id load-client-id
+                                  :rebuild? false}))))
+
+(defn- load-startup-file!
+  [server {:keys [load-file load-client-id] :as opts}]
+  (when load-file
+    (prepare-load-client! server opts)
+    (let [loaded (file-loader/load-file! (:session server)
+                                         load-file
+                                         (cond-> {}
+                                           load-client-id
+                                           (assoc :client-id load-client-id)))]
+      (dissoc loaded :session))))
+
+(defn- handle-command-response!
+  [server command]
+  (case (:op command)
+    :compile/load-file (load-file-response! server command)
+    (runtime/handle-command! (:session server) command)))
+
 (defn- handle-runtime-command!
   [server command]
-  (let [response (runtime/handle-command! (:session server) command)]
+  (let [response (handle-command-response! server command)]
     (try
       (ensure-xr-server! server)
       (ensure-xr-server-soon! server)
@@ -409,6 +449,9 @@
                :xr-host xr-server/default-host
                :xr-tls {}
                :dashboard? true
+               :load-file nil
+               :load-client-id nil
+               :load-blocks default-load-blocks
                :udp-port default-udp-port}]
     (if-let [arg (first args)]
       (case arg
@@ -459,6 +502,18 @@
         ("--udp-port" "-udp-port")
         (recur (nnext args)
                (assoc opts :udp-port (Long/parseLong (second args))))
+
+        ("--load" "--load-file" "-load")
+        (recur (nnext args)
+               (assoc opts :load-file (second args)))
+
+        ("--load-client" "--load-client-id")
+        (recur (nnext args)
+               (assoc opts :load-client-id (second args)))
+
+        ("--load-blocks")
+        (recur (nnext args)
+               (assoc opts :load-blocks (Long/parseLong (second args))))
 
         (if (numeric-string? arg)
           (recur (next args) (assoc opts :port (Long/parseLong arg)))
@@ -525,19 +580,31 @@
   [& args]
   (case (first args)
     "server"
-    (let [{:keys [port xr? xr-port xr-host xr-tls udp-port dashboard?]}
+    (let [{:keys [port xr? xr-port xr-host xr-tls udp-port dashboard?]
+           :as opts}
           (parse-server-args (next args))
           server (binding [*temperature-logger-enabled?* (not dashboard?)]
                    (if xr?
                      (start-server-with-xr port xr-port udp-port xr-host xr-tls)
-                     (start-server port xr-port udp-port xr-host xr-tls)))]
-      (print-launch-banner server)
-      (if dashboard?
-        (try
+                     (start-server port xr-port udp-port xr-host xr-tls)))
+          close-on-finally? (atom dashboard?)]
+      (try
+        (print-launch-banner server)
+        (when-let [loaded (load-startup-file! server opts)]
+          (println (str "loaded .lain file " (:file loaded)
+                        " as client " (:client-id loaded))))
+        (if dashboard?
           (run-server-dashboard server)
-          (finally
-            ((:close server))))
-        @(promise)))
+          (do
+            (reset! close-on-finally? false)
+            @(promise)))
+        (catch Throwable t
+          (reset! close-on-finally? false)
+          ((:close server))
+          (throw t))
+        (finally
+          (when @close-on-finally?
+            ((:close server))))))
 
     "request"
     (let [[_ port source] args]
@@ -565,4 +632,4 @@
         (semantic-repl/print-graph (:result response))
         (prn response)))
 
-    (println "usage: server [port] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | graph <port> | trace <port> <label>")))
+    (println "usage: server [port] [--load <file.lain>] [--load-client <client-id> --load-blocks <n>] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | graph <port> | trace <port> <label>")))

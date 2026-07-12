@@ -41,11 +41,20 @@
 (declare runtime-env
          settle-application-props)
 
+(defn- expose-application-boundary-outputs
+  [program-net]
+  (net/update-net-dict-entry
+   program-net
+   compiler-app/application-extra-output-ids-key
+   (fnil conj #{})
+   (boundary-outbox-id)))
+
 (defn compiled-state
   [source]
   (let [graph-id (runtime-graph-id)
         base-state (empty-state)
         base-net (-> (:program/net base-state)
+                     expose-application-boundary-outputs
                      (nb/ensure-cell (boundary-outbox-id))
                      (nb/install-cell graph-id
                                       (semantic-trace/graph-union (empty-graph))
@@ -218,6 +227,9 @@
     (cenv/bind-at env 'runtime:client-pipe
                   (runtime-ops/runtime-client-pipe-operator)
                   0)
+    (cenv/bind-at env 'runtime:list-text-events
+                  (runtime-ops/list-text-events-operator)
+                  0)
     (cenv/bind-at env 'translate (runtime-ops/translate-operator) 0)
     (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
       (cenv/bind-at env 'block (runtime-ops/block-target-operator (boundary-outbox-id)
@@ -263,10 +275,11 @@
           top-level-trace? (trace-source? source)
           graph-id (runtime-graph-id)
           env (runtime-env state (:program/env state) graph-id (:client-id block))
-          program-net-input (nb/install-cell (:program/net state)
-                                             graph-id
-                                             (:graph state)
-                                             (:graph state))
+          program-net-input (-> (:program/net state)
+                                expose-application-boundary-outputs
+                                (nb/install-cell graph-id
+                                                 (:graph state)
+                                                 (:graph state)))
           compiled (compiler/compile-source
                     source
                     env

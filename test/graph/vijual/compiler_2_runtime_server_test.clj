@@ -678,6 +678,46 @@
         (is (= 10 (:value block)))
         (is (str/includes? (:annotation block) "/slider-panel-0@4"))))))
 
+(deftest tui-slider-panel-events-feed-nested-derived-event-arithmetic
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "A"})
+    (doseq [source ["(def-cells a b c d e)"
+                    "(-> (+ a (- b c)) e)"
+                    "(-> e (block 3))"
+                    "(io:slider-panels a b c)"]]
+      (runtime/append-tui-block! session {:client-id "A" :text source}))
+    (doseq [[channel value] [["a" 10] ["b" 70] ["c" 5]]]
+      (runtime/commit-runtime-input! session
+                                     {:runtime/input :xr/widget-event
+                                      :widget-id "slider-panel-0"
+                                      :channel channel
+                                      :value value}))
+    (let [e-id (cenv/binding-id (cenv/lookup (:program/env @session) 'e))
+          e-content (net/network-cell-content (:program/net @session) e-id)]
+      (is (= [75] (vec (vals (event/active-values e-content)))))
+      (is (= 75 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                        [:blocks 3 :value]))))
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "a"
+                                    :value 11})
+    (let [e-id (cenv/binding-id (cenv/lookup (:program/env @session) 'e))
+          e-content (net/network-cell-content (:program/net @session) e-id)]
+      (is (= [76] (vec (vals (event/active-values e-content)))))
+      (is (= 76 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                        [:blocks 3 :value]))))
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :xr/widget-event
+                                    :widget-id "slider-panel-0"
+                                    :channel "b"
+                                    :value 71})
+    (let [e-id (cenv/binding-id (cenv/lookup (:program/env @session) 'e))
+          e-content (net/network-cell-content (:program/net @session) e-id)]
+      (is (= [77] (vec (vals (event/active-values e-content)))))
+      (is (= 77 (get-in (runtime/read-tui-view @session {:client-id "A"})
+                        [:blocks 3 :value]))))))
+
 (deftest tui-annotations-compact-trace-and-derived-event-identities
   (let [node-id (ids/new-node-id)
         trace-label (tui-annotations/format-annotations
