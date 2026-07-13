@@ -34,21 +34,25 @@
     (let [source (program/normalize-trace-source source)
           source (program/auto-output-source state block source)
           graph-id (program/runtime-graph-id)
-          env (program/runtime-env state
-                                   (:program/env state)
-                                   graph-id
-                                   (:client-id block))
           program-net-input (-> (:program/net state)
                                 expose-application-boundary-outputs
                                 (nb/install-cell graph-id
                                                  (:graph state)
                                                  (:graph state)))
+          environment (program/runtime-env
+                       state
+                       program-net-input
+                       (:program/env state)
+                       graph-id
+                       (:client-id block)
+                       [:block (:order block) (:epoch block)])
           compiled (compiler/compile-source
                     source
-                    env
-                    {:net program-net-input
-                     :seed [:runtime/block (:order block) (:epoch block)]
-                     :reuse-existing-bindings? true})
+                    (:env environment)
+                    (program/runtime-compile-options
+                     {:net (:net environment)
+                      :seed [:runtime/block (:order block) (:epoch block)]
+                      :reuse-existing-bindings? true}))
           [state program-net] (temperature/run-propagators
                                state
                                :propagation/compile-topology
@@ -261,22 +265,26 @@
   (try
     (let [source (program/normalize-trace-source source)
           graph-id (program/runtime-graph-id)
-          env (program/runtime-env state
-                                   (:program/env state)
-                                   graph-id
-                                   (:client-id block))
           program-net-input (-> (:program/net state)
                                 expose-application-boundary-outputs
                                 (nb/ensure-cell (program/boundary-outbox-id))
                                 (nb/install-cell graph-id
                                                  (:graph state)
                                                  (:graph state)))
+          environment (program/runtime-env
+                       state
+                       program-net-input
+                       (:program/env state)
+                       graph-id
+                       (:client-id block)
+                       [:effect-only (:order block) (:epoch block)])
           compiled (compiler/compile-source
                     source
-                    env
-                    {:net program-net-input
-                     :seed [:runtime/block (:order block) (:epoch block)]
-                     :reuse-existing-bindings? true})
+                    (:env environment)
+                    (program/runtime-compile-options
+                     {:net (:net environment)
+                      :seed [:runtime/block (:order block) (:epoch block)]
+                      :reuse-existing-bindings? true}))
           [state program-net] (temperature/run-propagators
                                state
                                :propagation/effect-only-compile

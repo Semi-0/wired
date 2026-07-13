@@ -9,11 +9,12 @@
   (let [program-net (-> program-net
                         (program/seed-program-block-cell runtime-net instance-id)
                         (program/seed-program-block-cell runtime-net blocks-id))
-        [prop-id program-net] ((obj/p:slot :instance/blocks
-                                           blocks-id
-                                           instance-id)
-                               program-net)]
-    [program-net (conj props prop-id)]))
+        [_cell-id prop-ids program-net]
+        (obj/install-slot-access program-net
+                                 :instance/blocks
+                                 instance-id
+                                 blocks-id)]
+    [program-net (into props prop-ids)]))
 
 (defn- seed-block
   [runtime-net [program-net props] block]
@@ -24,28 +25,34 @@
                             [(:block-id block) (:index-id block)
                              (:next-id block) (:text-id block)
                              (:display-id block)])
-        [index-prop program-net] ((obj/p:slot :block/index
-                                              (:index-id block)
-                                              (:block-id block))
-                                  program-net)
+        [_index-cell index-props program-net]
+        (obj/install-slot-access program-net
+                                 :block/index
+                                 (:block-id block)
+                                 (:index-id block))
         program-net (if (:text-current-source? block)
                       (nb/install-cell program-net
                                        (:text-id block)
                                        (:text-current block)
                                        (:text-current block))
                       program-net)
-        [text-prop program-net] ((obj/p:slot :block/text
-                                             (:text-id block)
-                                             (:block-id block))
-                                 program-net)
-        [display-prop program-net] ((obj/p:slot :block/display
-                                                (:display-id block)
-                                                (:block-id block))
-                                    program-net)
-        [next-prop program-net] ((obj/p:cdr (:next-id block)
-                                            (:block-id block))
-                                 program-net)]
-    [program-net (into props [index-prop text-prop display-prop next-prop])]))
+        [_text-cell text-props program-net]
+        (obj/install-slot-access program-net
+                                 :block/text
+                                 (:block-id block)
+                                 (:text-id block))
+        [_display-cell display-props program-net]
+        (obj/install-slot-access program-net
+                                 :block/display
+                                 (:block-id block)
+                                 (:display-id block))
+        [_next-cell next-props program-net]
+        (obj/install-slot-access program-net
+                                 :cdr
+                                 (:block-id block)
+                                 (:next-id block))]
+    [program-net
+     (into props cat [index-props text-props display-props next-props])]))
 
 (defn seed-program-topology
   [state program-net]

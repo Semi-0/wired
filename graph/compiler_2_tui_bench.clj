@@ -108,7 +108,10 @@
 
 (defn- cell-id
   [session label]
-  (cenv/binding-id (cenv/lookup (:program/env @session) (symbol label))))
+  (let [state @session]
+    (cenv/resolve-binding-id (:program/net state)
+                             (:program/env state)
+                             (symbol label))))
 
 (defn- parse-count
   [s default]

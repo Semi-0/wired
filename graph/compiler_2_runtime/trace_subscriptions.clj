@@ -3,9 +3,10 @@
   (:require [graph.compiler-2-runtime.effects :as effects]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
-            [propagators.cells.cell :as cell]
+            [graph.compiler-2-runtime.temperature :as temperature]
+            [propagators.core :as core]
             [propagators.datastructures.behavior :as behavior]
-            [propagators.network :as net]
+            [propagators.message :refer [message]]
             [propagators.semantic-trace :as semantic-trace]))
 
 (def mutate-session! state/mutate-session!)
@@ -57,12 +58,16 @@
             unchanged? (unchanged-result? state subscription-id graph)
             xr-traces (or (:xr/traces state)
                           (get-in state [:xr :traces]))
-            n1 (net/assoc-net-cell (:program/net state)
-                                   (:target-id subscription)
-                                   (cell/cell trace-update trace-update))
-            n2 (program/settle-application-props n1 [])]
-        (-> state
-            (assoc :program/net n2)
+            [tasks n1] (core/eval-cells
+                        [(message (:target-id subscription) trace-update)]
+                        (:program/net state))
+            [state' n2] (temperature/run-tasks state
+                                               :propagation/trace-result
+                                               tasks
+                                               n1)
+            n3 (program/settle-application-props n2 [])]
+        (-> state'
+            (assoc :program/net n3)
             (assoc-in [:trace/results subscription-id]
                       {:subscription-id subscription-id
                        :epoch epoch

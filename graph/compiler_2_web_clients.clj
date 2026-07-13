@@ -41,9 +41,10 @@
 
 (defn- cell-id-for-symbol
   [session sym]
-  (some-> (:program/env @session)
-          (cenv/lookup sym)
-          cenv/binding-id))
+  (let [state @session]
+    (cenv/resolve-binding-id (:program/net state)
+                             (:program/env state)
+                             sym)))
 
 (defn- symbol-strongest
   [session sym]

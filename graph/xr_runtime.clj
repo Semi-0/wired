@@ -50,9 +50,9 @@
         label (:label target*)]
     (or (parse-cell-id cell-id)
         (when label
-          (when-let [binding (cenv/lookup (:program/env state)
-                                          (symbol label))]
-            (cenv/binding-id binding)))
+          (cenv/resolve-binding-id (:program/net state)
+                                   (:program/env state)
+                                   (symbol label)))
         (when label
           (let [node-ids (into #{}
                                (keep (fn [[node-id node-label]]

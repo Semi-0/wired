@@ -14,6 +14,8 @@
             [propagators.compiler-2.main :as compiler]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.scope-source :as scope-source]
+            [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
@@ -38,6 +40,30 @@
 (def normalize-trace-source source/normalize-trace-source)
 (def auto-output-source source/auto-output-source)
 
+(declare runtime-compiler)
+
+(defn runtime-application-installer
+  [application-id operator-id args-id arg-ids context-id out-id]
+  (compiler-app/p:apply-application-with runtime-compiler
+                                         application-id
+                                         operator-id
+                                         args-id
+                                         arg-ids
+                                         context-id
+                                         out-id))
+
+(defn runtime-compiler
+  [compiler-state expr]
+  (compiler/default-compiler
+   (assoc compiler-state :application-installer runtime-application-installer)
+   expr))
+
+(defn runtime-compile-options
+  [opts]
+  (assoc opts
+         :compiler runtime-compiler
+         :application-installer runtime-application-installer))
+
 (declare runtime-env
          settle-application-props)
 
@@ -59,14 +85,17 @@
                      (nb/install-cell graph-id
                                       (semantic-trace/graph-union (empty-graph))
                                       (semantic-trace/graph-union (empty-graph))))
-        env (runtime-env base-state
-                         (:program/env base-state)
-                         graph-id
-                         default-xr-client-id)
+        environment (runtime-env base-state
+                                 base-net
+                                 (:program/env base-state)
+                                 graph-id
+                                 default-xr-client-id
+                                 [:compiled-source source])
         compiled (compiler/compile-source source
-                                          env
-                                          {:net base-net
-                                           :seed [:runtime/xr source]})
+                                          (:env environment)
+                                          (runtime-compile-options
+                                           {:net (:net environment)
+                                            :seed [:runtime/xr source]}))
         network0 (nb/run-propagators (:net compiled) (:props compiled))
         [tasks network1] (core/eval-cells
                           [(message graph-id
@@ -105,7 +134,8 @@
 (defn compiled-result-value
   [compiled network]
   (let [result-id (:cell compiled)
-        result (net/network-cell-strongest network result-id)]
+        result (scope-source/unwrap
+                (net/network-cell-strongest network result-id))]
     (cond
       (value/unusable? result) value/nothing
       (net/network? result) value/nothing
@@ -151,16 +181,25 @@
 
 (defn install-instance-slots
   [n {:keys [instance-id blocks-id]}]
-  (let [[blocks-prop n] ((obj/p:slot :instance/blocks blocks-id instance-id) n)]
-    (nb/run-propagators n [blocks-prop])))
+  (let [[_cell-id prop-ids n]
+        (obj/install-slot-access n :instance/blocks instance-id blocks-id)]
+    (nb/run-propagators n prop-ids)))
 
 (defn install-block-slots
   [n {:keys [block-id index-id text-id display-id next-id]}]
-  (let [[index-prop n] ((obj/p:slot :block/index index-id block-id) n)
-        [text-prop n] ((obj/p:slot :block/text text-id block-id) n)
-        [display-prop n] ((obj/p:slot :block/display display-id block-id) n)
-        [next-prop n] ((obj/p:cdr next-id block-id) n)]
-    (nb/run-propagators n [index-prop text-prop display-prop next-prop])))
+  (let [[_index-cell index-props n]
+        (obj/install-slot-access n :block/index block-id index-id)
+        [_text-cell text-props n]
+        (obj/install-slot-access n :block/text block-id text-id)
+        [_display-cell display-props n]
+        (obj/install-slot-access n :block/display block-id display-id)
+        [_next-cell next-props n]
+        (obj/install-slot-access n :cdr block-id next-id)]
+    (nb/run-propagators n
+                        (into [] cat [index-props
+                                     text-props
+                                     display-props
+                                     next-props]))))
 
 (defn seed-program-instances [state program-net]
   (reduce-kv
@@ -192,65 +231,59 @@
    program-net
    (all-blocks state)))
 
-(defn runtime-env [state base-env graph-id current-client-id]
-  (as-> base-env env
-    (cenv/bind-at env 'block-at (runtime-ops/block-at-operator (boundary-outbox-id)) 0)
-    (cenv/bind-at env 'be:block-at (runtime-ops/be-block-at-operator (boundary-outbox-id)) 0)
-    (cenv/bind-at env 'instance (runtime-ops/instance-operator) 0)
-    (cenv/bind-at env 'trace-target (runtime-ops/trace-target-operator) 0)
-    (cenv/bind-at env 'trace
-                  (runtime-ops/trace-operator graph-id (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'xr-io (runtime-ops/xr-io-operator (boundary-outbox-id)) 0)
-    (cenv/bind-at env 'io:xr (runtime-ops/io-xr-operator (boundary-outbox-id)) 0)
-    (cenv/bind-at env 'slider-io
-                  (runtime-widget/slider-io-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'slider-panel-io
-                  (runtime-widget/slider-panel-io-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'io:slider
-                  (runtime-widget/io-slider-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'io:slider-panel
-                  (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'io:slider-panels
-                  (runtime-widget/io-slider-panel-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'io:slider-panel-name
-                  (runtime-widget/io-slider-panel-name-operator (boundary-outbox-id))
-                  0)
-    (cenv/bind-at env 'runtime:clients
-                  (runtime-ops/runtime-clients-operator)
-                  0)
-    (cenv/bind-at env 'runtime:client-pipe
-                  (runtime-ops/runtime-client-pipe-operator)
-                  0)
-    (cenv/bind-at env 'runtime:list-text-events
-                  (runtime-ops/list-text-events-operator)
-                  0)
-    (cenv/bind-at env 'translate (runtime-ops/translate-operator) 0)
-    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
-      (cenv/bind-at env 'block (runtime-ops/block-target-operator (boundary-outbox-id)
-                                                      instance-id)
-                    0)
-      env)
-    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
-      (cenv/bind-at env 'be:block (runtime-ops/be-block-target-operator (boundary-outbox-id)
-                                                            instance-id)
-                    0)
-      env)
-    (reduce-kv (fn [e client-id {:keys [instance-id]}]
-                 (cenv/bind-at e
-                               (symbol client-id)
-                               (cenv/cell-binding instance-id)
-                               0))
-               env
-               (:tuis state))
-    (if-let [instance-id (get-in state [:tuis current-client-id :instance-id])]
-      (cenv/bind-at env '% (cenv/cell-binding instance-id) 0)
-      env)))
+(defn- static-runtime-bindings
+  [graph-id]
+  [['block-at (runtime-ops/block-at-operator (boundary-outbox-id))]
+   ['be:block-at (runtime-ops/be-block-at-operator (boundary-outbox-id))]
+   ['instance (runtime-ops/instance-operator)]
+   ['trace-target (runtime-ops/trace-target-operator)]
+   ['trace (runtime-ops/trace-operator graph-id (boundary-outbox-id))]
+   ['xr-io (runtime-ops/xr-io-operator (boundary-outbox-id))]
+   ['io:xr (runtime-ops/io-xr-operator (boundary-outbox-id))]
+   ['slider-io (runtime-widget/slider-io-operator (boundary-outbox-id))]
+   ['slider-panel-io (runtime-widget/slider-panel-io-operator (boundary-outbox-id))]
+   ['io:slider (runtime-widget/io-slider-operator (boundary-outbox-id))]
+   ['io:slider-panel (runtime-widget/io-slider-panel-operator (boundary-outbox-id))]
+   ['io:slider-panels (runtime-widget/io-slider-panel-operator (boundary-outbox-id))]
+   ['io:slider-panel-name
+    (runtime-widget/io-slider-panel-name-operator (boundary-outbox-id))]
+   ['runtime:clients (runtime-ops/runtime-clients-operator)]
+   ['runtime:client-pipe (runtime-ops/runtime-client-pipe-operator)]
+   ['runtime:list-text-events (runtime-ops/list-text-events-operator)]
+   ['translate (runtime-ops/translate-operator)]])
+
+(defn- dynamic-runtime-bindings
+  [runtime-state current-client-id]
+  (let [instance-id (get-in runtime-state [:tuis current-client-id :instance-id])]
+    (cond-> (mapv (fn [[client-id {:keys [instance-id]}]]
+                    [(symbol client-id) (cenv/cell-binding instance-id)])
+                  (:tuis runtime-state))
+      instance-id
+      (into [['block (runtime-ops/block-target-operator (boundary-outbox-id)
+                                                        instance-id)]
+             ['be:block (runtime-ops/be-block-target-operator
+                         (boundary-outbox-id) instance-id)]
+             ['% (cenv/cell-binding instance-id)]]))))
+
+(defn runtime-env
+  [runtime-state network base-env graph-id current-client-id scope-key]
+  (let [dynamic (dynamic-runtime-bindings runtime-state current-client-id)]
+    (if-not (ids/node-id? base-env)
+      (let [root-id (state/stable-node-id :compiler-2 :runtime-env :root)
+            initial (reduce (fn [environment [sym binding]]
+                              (cenv/bind-at environment sym binding 0))
+                            base-env
+                            (into dynamic (static-runtime-bindings graph-id)))
+            [network env-id] (cenv/import-environment network root-id initial)]
+        {:net network :env env-id :props []})
+      (let [child-id (state/stable-node-id :compiler-2 :runtime-env scope-key)
+            [scope-props network] ((cenv/p:sub-env base-env child-id)
+                                   (nb/ensure-cell network base-env))
+            declared (cenv/declare-bindings network child-id child-id dynamic)
+            props (into (vec scope-props) (:props declared))]
+        {:net (nb/run-propagators (:net declared) props)
+         :env child-id
+         :props props}))))
 
 (defn retained-application-props
   [program-net]
@@ -274,18 +307,24 @@
           needs-live-graph? (trace-form? source)
           top-level-trace? (trace-source? source)
           graph-id (runtime-graph-id)
-          env (runtime-env state (:program/env state) graph-id (:client-id block))
           program-net-input (-> (:program/net state)
                                 expose-application-boundary-outputs
                                 (nb/install-cell graph-id
                                                  (:graph state)
                                                  (:graph state)))
+          environment (runtime-env state
+                                   program-net-input
+                                   (:program/env state)
+                                   graph-id
+                                   (:client-id block)
+                                   [:block (:order block) (:epoch block)])
           compiled (compiler/compile-source
                     source
-                    env
-                    {:net program-net-input
-                     :seed [:runtime/block (:order block) (:epoch block)]
-                     :reuse-existing-bindings? true})
+                    (:env environment)
+                    (runtime-compile-options
+                     {:net (:net environment)
+                      :seed [:runtime/block (:order block) (:epoch block)]
+                      :reuse-existing-bindings? true}))
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
           program-net2 (if (and needs-live-graph?
                                 (not top-level-trace?))

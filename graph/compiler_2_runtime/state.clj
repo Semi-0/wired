@@ -6,6 +6,7 @@
             [propagators.cells.cell-protocol :as cell-protocol]
             [propagators.compile :as compile1]
             [propagators.compiler-2.compiler.basis :as compiler-helpers]
+            [propagators.ids :as ids]
             [propagators.network :as net]
             [propagators.network-cache :as network-cache])
   (:import [java.util.concurrent Executors]))
@@ -84,7 +85,8 @@
   (and (map? state)
        (net/network? (:network state))
        (net/network? (:program/net state))
-       (map? (:program/env state))))
+       (or (map? (:program/env state))
+           (ids/node-id? (:program/env state)))))
 
 (defn- repair-partial-state
   [state]

@@ -36,8 +36,9 @@
 
 (defn trace-cell-id-for-label
   [state label]
-  (or (some-> (cenv/lookup (:program/env state) (symbol (str label)))
-              cenv/binding-id)
+  (or (cenv/resolve-binding-id (:program/net state)
+                               (:program/env state)
+                               (symbol (str label)))
       (some (fn [[id entry]]
               (when (and (cell/cell? entry)
                          (matching-label? label (get (labels state) id)))

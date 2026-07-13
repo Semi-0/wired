@@ -181,8 +181,9 @@
 (defn- event-source-id
   [state cell-form fallback-id]
   (or (when-let [sym (ast-symbol cell-form)]
-        (some-> (cenv/lookup (:env state) (suffix-symbol sym "-events"))
-                cenv/binding-id))
+        (cenv/resolve-binding-id (:net state)
+                                 (:env state)
+                                 (suffix-symbol sym "-events")))
       fallback-id))
 
 (defn- io-slider-panel-operator*
