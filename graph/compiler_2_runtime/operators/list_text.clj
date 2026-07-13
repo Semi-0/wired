@@ -1,7 +1,7 @@
 (ns graph.compiler-2-runtime.operators.list-text
   "Linked-list text projection operators for runtime demos."
   (:require [propagators.cells.value :as value]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]

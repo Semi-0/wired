@@ -17,7 +17,7 @@
             [graph.xr-runtime :as xr]
             [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.event :as event]

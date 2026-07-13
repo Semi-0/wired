@@ -5,7 +5,7 @@
             [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.application :as compiler-app]
+            [propagators.compiler-2.runtime.application :as compiler-app]
             [propagators.compiler-2.main :as compiler]
             [propagators.core :as core]
             [propagators.message :refer [message]]

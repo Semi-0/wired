@@ -4,7 +4,7 @@
             [clojure.string :as str]
             [clojure.walk :as walk]
             [graph.compiler-2-runtime.block-model :as block-model]
-            [propagators.compiler-2.parser :as compiler-parser])
+            [propagators.compiler-2.language.parser :as compiler-parser])
   (:import [java.io PushbackReader StringReader]))
 
 (def block-by-index block-model/block-by-index)

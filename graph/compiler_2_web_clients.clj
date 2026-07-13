@@ -4,7 +4,7 @@
             [graph.compiler-2-runtime.file-loader :as file-loader]
             [graph.compiler-2-runtime.web-bridge :as bridge]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]

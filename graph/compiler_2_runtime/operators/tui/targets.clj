@@ -2,7 +2,7 @@
   "TUI target and instance compiler-2 operators."
   (:require [graph.compiler-2-runtime.operators.tui.common :as common]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]))

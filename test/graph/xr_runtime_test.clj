@@ -10,7 +10,7 @@
             [graph.xr-runtime :as xr]
             [graph.xr-server :as xr-server]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.event :as event]

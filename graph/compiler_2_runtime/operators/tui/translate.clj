@@ -1,6 +1,6 @@
 (ns graph.compiler-2-runtime.operators.tui.translate
   "Small translation demo compiler-2 operator."
-  (:require [propagators.compiler-2.operator-value :as operator-value]
+  (:require [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.message :refer [message]]
             [propagators.network :as net]))
 

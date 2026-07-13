@@ -5,8 +5,8 @@
             [graph.vijual :as v]
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.ast :as ast]
-            [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.language.ast :as ast]
+            [propagators.compiler-2.model.closure-value :as closure-value]
             [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
             [propagators.network :as net]))

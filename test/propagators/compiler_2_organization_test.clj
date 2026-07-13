@@ -1,6 +1,6 @@
 (ns propagators.compiler-2-organization-test
   (:require [clojure.test :refer [deftest is]]
-            [propagators.compiler-2.compiler.cps :as compiler]
+            [propagators.compiler-2.compiler.core :as compiler]
             [propagators.compiler-2.compiler.declarations :as declarations]
             [propagators.compiler-2.compiler.handlers :as handlers]
             [propagators.compiler-2.compiler.predicates :as predicates]
@@ -14,7 +14,7 @@
   (is (identical? main/default-compiler compiler/default-compiler))
   (is (identical? main/compile* compiler/compile*))
   (is (identical? cps-shim/default-compiler compiler/default-compiler))
-  (is (nil? (get (ns-aliases 'propagators.compiler-2.compiler.cps)
+  (is (nil? (get (ns-aliases 'propagators.compiler-2.compiler.core)
                  'predicate-core)))
   (is (= 'propagators.compiler-2.compiler.handlers
          (-> #'handlers/compile-application meta :ns ns-name)))

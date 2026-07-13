@@ -3,7 +3,7 @@
   (:require [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.cell :as cell]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.network :as net]))
 
 (def require-state state/require-state)

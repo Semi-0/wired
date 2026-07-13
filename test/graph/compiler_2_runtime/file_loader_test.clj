@@ -5,7 +5,7 @@
             [graph.compiler-2-runtime.tui-annotations :as annotations]
             [graph.compiler-2-runtime.web-bridge :as bridge]
             [graph.compiler-2-runtime-server :as server]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.datastructures.event :as event]
             [propagators.network :as net]))
 

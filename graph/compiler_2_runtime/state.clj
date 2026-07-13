@@ -5,7 +5,7 @@
             [graph.vijual-compiler-2-demo :as demo]
             [propagators.cells.cell-protocol :as cell-protocol]
             [propagators.compile :as compile1]
-            [propagators.compiler-2.helpers :as compiler-helpers]
+            [propagators.compiler-2.compiler.basis :as compiler-helpers]
             [propagators.network :as net]
             [propagators.network-cache :as network-cache])
   (:import [java.util.concurrent Executors]))
@@ -61,7 +61,7 @@
 
 (defn runtime-compiler-env []
   ((requiring-resolve
-    'propagators.compiler-2.behavior/bind-behavior-operators)
+    'propagators.compiler-2.operators.behavior/bind-behavior-operators)
    (compiler-helpers/default-env)))
 
 (defn empty-state []

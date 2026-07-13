@@ -3,7 +3,7 @@
   (:require [graph.compiler-2-runtime.boundary :as boundary]
             [graph.compiler-2-runtime.ids :as runtime-ids]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]

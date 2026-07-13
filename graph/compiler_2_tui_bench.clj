@@ -6,7 +6,7 @@
             [graph.compiler-2-runtime.input :as runtime-input]
             [graph.compiler-2-tui :as tui]
             [propagators.cells.cell-protocol :as cell-protocol]
-            [propagators.compiler-2.env :as cenv]
+            [propagators.compiler-2.model.env :as cenv]
             [propagators.generic-procedure :as generic]))
 
 (def simple-trace-commands
