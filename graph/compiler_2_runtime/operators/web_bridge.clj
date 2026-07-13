@@ -3,6 +3,7 @@
   (:require [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.web-bridge :as bridge]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.dispatch :as compiler-dispatch]
             [propagators.compiler-2.env :as cenv]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.operator-value :as operator-value]
@@ -20,10 +21,8 @@
 
 (defn- compile-form
   [state form role]
-  (let [compile* (requiring-resolve 'propagators.compiler-2.core/g:compile)
-        [state' binding] (compile* form
-                                   (:env state)
-                                   (h/child state role))]
+  (let [compile* (compiler-dispatch/state-compiler state)
+        [state' binding] (compile* (h/child state role) form)]
     [(assoc state' :path (:path state)) binding]))
 
 (defn- add-prop

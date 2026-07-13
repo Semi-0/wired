@@ -3,6 +3,7 @@
   (:require [graph.compiler-2-runtime.ids :as runtime-ids]
             [propagators.cells.value :as value]
             [propagators.compiler-2.ast :as ast]
+            [propagators.compiler-2.dispatch :as compiler-dispatch]
             [propagators.compiler-2.env :as cenv]
             [propagators.compiler-2.helpers :as compiler-helpers]
             [propagators.compiler-2.operator-value :as operator-value]
@@ -58,10 +59,8 @@
 
 (defn- compile-form
   [state form role]
-  (let [compile* (requiring-resolve 'propagators.compiler-2.core/g:compile)]
-    (let [[state' binding] (compile* form
-                                     (:env state)
-                                     (compiler-helpers/child state role))]
+  (let [compile* (compiler-dispatch/state-compiler state)]
+    (let [[state' binding] (compile* (compiler-helpers/child state role) form)]
       [(assoc state' :path (:path state)) binding])))
 
 (defn- ast-symbol-name
