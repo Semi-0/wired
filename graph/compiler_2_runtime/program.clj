@@ -398,12 +398,33 @@
           state
           source-blocks))
 
+(defn compiled-has-unresolved-application?
+  [compiled program-net]
+  (boolean
+   (some (fn [app-id]
+           (let [application (net/network-cell-strongest program-net app-id)
+                 operator-id (obj/slot-value
+                              application
+                              compiler/application-operator-cell-slot)]
+             (or (nil? operator-id)
+                 (value/unusable?
+                  (net/network-cell-strongest program-net operator-id)))))
+         (:applications compiled))))
+
+(defn- block-needs-application-retry?
+  [state block]
+  (some-> (get-in state
+                  [:program/results [(:client-id block) (:index block)]
+                   :compiled])
+          (compiled-has-unresolved-application? (:program/net state))))
+
 (defn retry-expression-blocks
   [state epoch source-blocks]
   (reduce (fn [s block]
             (let [source (block-text s block)]
               (if (and (string? source)
-                       (not (top-level-declaration? source)))
+                       (not (top-level-declaration? source))
+                       (block-needs-application-retry? s block))
                 (rebuild-block s epoch block)
                 s)))
           state

@@ -15,10 +15,10 @@
 (def effect-tick common/effect-tick)
 
 (defn- write-block-messages
-  [network outbox-id text-id target-id]
+  [network outbox-id text-id source-id read-block?]
   (let [source-value (when text-id
                        (net/network-cell-strongest network text-id))
-        target-value (net/network-cell-strongest network target-id)
+        target-value (net/network-cell-strongest network source-id)
         write-message (when (and text-id
                                  (not (value/nothing? target-value)))
                         (let [epoch (effect-tick network)
@@ -34,8 +34,8 @@
                                                                target-value
                                                                epoch)}))))]
     (cond-> []
-      text-id
-      (conj (message target-id source-value))
+      (and read-block? text-id)
+      (conj (message source-id source-value))
 
       write-message
       (conj write-message))))
@@ -75,7 +75,8 @@
                   (when-not (#{2 3} (count arg-ids))
                     (throw (ex-info "block-at expects instance, index, and optional output"
                                     {:arg-ids arg-ids})))
-                  (write-block-messages network outbox-id text-id target-id)))}))
+                  (write-block-messages network outbox-id text-id target-id
+                                        (nil? maybe-out))))}))
 
 (defn be-block-at-operator [outbox-id]
   (operator-value/operator-closure

@@ -66,7 +66,7 @@
             (value/unusable? direction)
             (not (keyword? direction)))
       []
-      (let [effect-id [:trace/subscribe target-id request]]
+      (let [effect-id [:trace/subscribe target-id]]
         [(message outbox-id
                   (obj/compound-object
                    {(effect-slot-key effect-id)

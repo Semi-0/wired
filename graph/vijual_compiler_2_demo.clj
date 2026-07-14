@@ -68,6 +68,11 @@
    {}
    (env-frames env)))
 
+(defn topology-binding-labels [n]
+  (into {}
+        (map (fn [[id sym]] [id (display-name sym)]))
+        (cenv/binding-names n)))
+
 (defn network-closure-values [n]
   (keep (fn [[id entry]]
           (let [strongest (net/network-cell-strongest n id)]
@@ -205,7 +210,8 @@
 (defn compiled-labels [compiled n]
   (let [graph (net/net-graph n)
         env-labels (merge (environment-labels (:env compiled))
-                          (closure-env-labels n))
+                          (closure-env-labels n)
+                          (topology-binding-labels n))
         props (vec (or (:props compiled)
                        (compiler/compiled-props (:net compiled))))
         applications (vec (or (:applications compiled)
@@ -279,7 +285,8 @@
    (semantic-base-labels compiled n {}))
   ([compiled n {:keys [result-label] :or {result-label "result"}}]
    (let [env-labels (merge (environment-labels (:env compiled))
-                           (closure-env-labels n))
+                           (closure-env-labels n)
+                           (topology-binding-labels n))
          labels (merge (literal-cell-labels n)
                        (closure-labels n)
                        env-labels)]

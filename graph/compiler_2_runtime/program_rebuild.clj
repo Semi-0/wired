@@ -103,7 +103,11 @@
   (reduce (fn [s block]
             (let [source (program/block-text s block)]
               (if (and (string? source)
-                       (not (program/top-level-declaration? source)))
+                       (not (program/top-level-declaration? source))
+                       (some-> (get-in s [:program/results (result-key block)
+                                          :compiled])
+                               (program/compiled-has-unresolved-application?
+                                (:program/net s))))
                 (rebuild-topology-block s epoch block)
                 s)))
           state
