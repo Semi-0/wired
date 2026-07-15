@@ -23,7 +23,7 @@
       (is (contains? labels ":: [x]"))
       (is (contains? labels "5"))
       (is (contains? labels "app:<->"))
-      (is (contains? labels "prop:<->"))
+      (is (contains? labels "ctx:<->"))
       (is (contains? labels "op:<->"))
       (is (contains? labels "app:inc-local"))
       (is (contains? labels "prop:inc-local"))
@@ -37,7 +37,7 @@
       (is (contains? labels "x"))
       (is (contains? labels "1"))
       (is (contains? labels "app:+"))
-      (is (contains? labels "prop:+"))
+      (is (contains? labels "ctx:+"))
       (is (contains? labels "op:+"))
       (is (contains? labels "args:+")))))
 

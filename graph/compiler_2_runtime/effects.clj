@@ -2,13 +2,13 @@
   "Boundary effect delivery for compiler-2 runtime."
   (:require [graph.compiler-2-runtime.block-model :as block-model]
             [graph.compiler-2-runtime.boundary :as boundary]
+            [graph.compiler-2-runtime.display :as display]
             [graph.compiler-2-runtime.graph-projection :as graphp]
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.core :as core]
-            [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -113,21 +113,10 @@
             (update-in [:tui :effects] (fnil conj []) request)))
       state)))
 
-(defn display-behavior-update
-  [display-id tick payload]
-  (let [payload-identities (behavior/identity-set payload)
-        identities (if (seq payload-identities)
-                     payload-identities
-                     #{[:tui/display display-id]})]
-    (behavior/retained-value [:tui/display display-id]
-                             tick
-                             payload
-                             #{[:tui/display display-id tick]}
-                             identities)))
-
 (defn write-block-display-value
   [state block tick payload]
-  (let [update (display-behavior-update (:display-id block) tick payload)
+  (let [display-id (:display-id block)
+        update (display/update-value display-id display-id tick payload)
         [tasks n1] (core/eval-cells [(message (:display-id block) update)]
                                     (:network state))
         [state' n2] (temperature/run-tasks state

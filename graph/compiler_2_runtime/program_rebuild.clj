@@ -99,19 +99,8 @@
           source-blocks))
 
 (defn- retry-expression-blocks
-  [state epoch source-blocks]
-  (reduce (fn [s block]
-            (let [source (program/block-text s block)]
-              (if (and (string? source)
-                       (not (program/top-level-declaration? source))
-                       (some-> (get-in s [:program/results (result-key block)
-                                          :compiled])
-                               (program/compiled-has-unresolved-application?
-                                (:program/net s))))
-                (rebuild-topology-block s epoch block)
-                s)))
-          state
-          source-blocks))
+  [state _epoch _source-blocks]
+  (program/repair-unresolved-application-operators state))
 
 (defn- compile-trace-source-blocks
   [state epoch source-blocks]
@@ -330,13 +319,17 @@
                                        epoch)
                          :runtime/last-incremental-profile {})
             block (assoc block :epoch (:epoch block))
-            compiled (timed-state
-                      (assoc state :program/epoch epoch)
-                      :compile
-                      #(if (be-block-watch-source? source)
-                         (compile-effect-only-form % block epoch source)
-                         (program/compile-program-form % block epoch source)))
-            entry (compiled-entry compiled block)]
+            compiled0 (timed-state
+                       (assoc state :program/epoch epoch)
+                       :compile
+                       #(if (be-block-watch-source? source)
+                          (compile-effect-only-form % block epoch source)
+                          (program/compile-program-form % block epoch source)))
+            entry (compiled-entry compiled0 block)
+            compiled (if (:error entry)
+                       compiled0
+                       (program/repair-unresolved-application-operators
+                        compiled0))]
         (when-not (:error entry)
           (let [settled (if (be-block-watch-source? source)
                           compiled

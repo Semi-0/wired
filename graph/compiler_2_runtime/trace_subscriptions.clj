@@ -5,7 +5,7 @@
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.temperature :as temperature]
             [propagators.core :as core]
-            [propagators.datastructures.behavior :as behavior]
+            [propagators.datastructures.event :as event]
             [propagators.message :refer [message]]
             [propagators.semantic-trace :as semantic-trace]))
 
@@ -19,19 +19,17 @@
   (max (long (or (:program/epoch state) 0))
        (long (or (:runtime/commit-tick state) 0))))
 
-(defn result-behavior
-  [subscription-id epoch graph]
-  (behavior/latest-value epoch
-                         graph
-                         #{[:xr/trace-subscription subscription-id]}))
+(defn result-event
+  [subscription-id target-id epoch graph]
+  (event/active-event target-id subscription-id epoch graph))
 
 (defn result-epoch
   [result]
-  (some-> result :behavior behavior/strongest-value behavior/summary-latest-time))
+  (:epoch result))
 
 (defn result-graph
   [result]
-  (some-> result :behavior behavior/strongest-value behavior/base-value))
+  (:graph result))
 
 (defn- stale-result?
   [state subscription-id epoch]
@@ -54,7 +52,10 @@
       (update state :trace/stale-results (fnil inc 0))
 
       :else
-      (let [trace-update (result-behavior subscription-id epoch graph)
+      (let [trace-update (result-event subscription-id
+                                       (:target-id subscription)
+                                       epoch
+                                       graph)
             unchanged? (unchanged-result? state subscription-id graph)
             xr-traces (or (:xr/traces state)
                           (get-in state [:xr :traces]))
@@ -71,7 +72,8 @@
             (assoc-in [:trace/results subscription-id]
                       {:subscription-id subscription-id
                        :epoch epoch
-                       :behavior trace-update})
+                       :graph graph
+                       :event trace-update})
             (update :trace/published-results (fnil inc 0))
             (cond-> unchanged?
               (update :trace/unchanged-results (fnil inc 0)))

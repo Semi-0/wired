@@ -9,6 +9,7 @@
             [graph.compiler-2-runtime.widget :as runtime-widget]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.runtime.application :as compiler-app]
             [propagators.compiler-2.model.env :as cenv]
             [propagators.compiler-2.main :as compiler]
@@ -19,6 +20,7 @@
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
+            [propagators.stdlib.prop :as stdlib-prop]
             [propagators.semantic-trace :as semantic-trace]))
 
 (def default-xr-client-id state/default-xr-client-id)
@@ -411,24 +413,46 @@
                   (net/network-cell-strongest program-net operator-id)))))
          (:applications compiled))))
 
-(defn- block-needs-application-retry?
-  [state block]
-  (some-> (get-in state
-                  [:program/results [(:client-id block) (:index block)]
-                   :compiled])
-          (compiled-has-unresolved-application? (:program/net state))))
+(defn- repair-application-operator
+  [state app-id]
+  (let [program-net (:program/net state)
+        application (net/network-cell-strongest program-net app-id)
+        operator-ast (obj/slot-value
+                      application
+                      compiler/application-operator-ast-slot)
+        operator-id (obj/slot-value
+                     application
+                     compiler/application-operator-cell-slot)
+        sym (when (= :symbol (ast/type operator-ast))
+              (ast/name operator-ast))
+        resolved-id (when sym
+                      (cenv/resolve-binding-id program-net
+                                               (:program/env state)
+                                               sym))]
+    (if (and operator-id
+             resolved-id
+             (not= operator-id resolved-id)
+             (value/unusable?
+              (net/network-cell-strongest program-net operator-id))
+             (not (value/unusable?
+                   (net/network-cell-strongest program-net resolved-id))))
+      (let [[prop-id installed]
+            ((stdlib-prop/id resolved-id operator-id) program-net)]
+        (assoc state :program/net (nb/run-propagators installed [prop-id])))
+      state)))
+
+(defn repair-unresolved-application-operators
+  [state]
+  (let [app-ids (->> (:program/results state)
+                     vals
+                     (keep :compiled)
+                     (mapcat :applications)
+                     distinct)]
+    (reduce repair-application-operator state app-ids)))
 
 (defn retry-expression-blocks
-  [state epoch source-blocks]
-  (reduce (fn [s block]
-            (let [source (block-text s block)]
-              (if (and (string? source)
-                       (not (top-level-declaration? source))
-                       (block-needs-application-retry? s block))
-                (rebuild-block s epoch block)
-                s)))
-          state
-          source-blocks))
+  [state _epoch _source-blocks]
+  (repair-unresolved-application-operators state))
 
 (defn rebuild-program-state
   [state]

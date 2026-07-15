@@ -2,6 +2,7 @@
   "Compile a compiler_2 let-cell form and draw the resulting propagator graph."
   (:require [clojure.string :as str]
             [graph.vijual :as v]
+            [propagators.compiler-2.compiler.declarations :as declarations]
             [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.model.closure-value :as closure-value]
             [propagators.compiler-2.model.env :as cenv]
@@ -426,7 +427,7 @@
     (map-indexed
      (fn [index closure-info]
        (let [compiled (compiler/compile-expr
-                       (closure-value/closure-body closure-info))]
+                       (declarations/closure-semantic-body closure-info))]
          {:title (str "Semantic closure body " index ": compiler wiring collapsed")
           :graph (semantic-graph compiled (:net compiled) {:result-label "output"})}))
      (unique-network-closure-values n)))))

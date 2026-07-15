@@ -47,11 +47,7 @@
     request
 
     (:label request)
-    (if-let [cell-id (trace-cell-id-for-label state (:label request))]
-      (-> request
-          (assoc :node cell-id)
-          (dissoc :label))
-      request)
+    request
 
     :else
     (assoc request :label (:label (resolve-cell-row state request)))))

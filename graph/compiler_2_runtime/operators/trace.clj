@@ -28,31 +28,11 @@
            (not (event/event-projection? source-value))
            (not (semantic-trace/semantic-trace-graph? source-value)))))
 
-(defn- graph-label-for-cell
-  [graph source-id]
-  (some->> (get-in graph [:node-aliases source-id])
-           (#(cond
-               (set? %) %
-               (sequential? %) (set %)
-               (some? %) #{%}
-               :else #{}))
-           (keep (:nodes graph))
-           (sort-by (fn [label]
-                      [(cond
-                         (or (nil? label) (= "cell" (str label))) 3
-                         (.startsWith (str label) "cell") 2
-                         (.startsWith (str label) "slot ") 2
-                         :else 0)
-                       (str label)]))
-           first))
-
 (defn- trace-request-source
-  [graph source-id source-value direction]
+  [source-id source-value direction]
   (if (explicit-request-source? source-value)
     (semantic-trace/trace-request source-value direction)
-    (if-let [label (graph-label-for-cell graph source-id)]
-      (semantic-trace/trace-request label direction)
-      {:node source-id :direction direction})))
+    {:node source-id :direction direction}))
 
 (defn- trace-messages
   [network graph-id outbox-id source-id direction-id target-id]
@@ -61,7 +41,7 @@
                     :upstream)
         graph (net/network-cell-strongest network graph-id)
         source-value (net/network-cell-strongest network source-id)
-        request (trace-request-source graph source-id source-value direction)]
+        request (trace-request-source source-id source-value direction)]
     (if (or (value/unusable? graph)
             (value/unusable? direction)
             (not (keyword? direction)))
