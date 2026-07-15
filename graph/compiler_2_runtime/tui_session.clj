@@ -8,6 +8,8 @@
             [graph.compiler-2-runtime.temperature :as temperature]
             [graph.compiler-2-runtime.tui-annotations :as annotations]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.operators.versioned-definition :as definition]
+            [propagators.gur.flat :as fvm]
             [propagators.core :as core]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -29,7 +31,7 @@
 (def install-block-incremental! input/install-block-incremental!)
 (def seed-appended-block-topology! input/seed-appended-block-topology!)
 
-(declare prepare-block-targets! read-tui-view)
+(declare append-tui-block! prepare-block-targets! read-tui-view)
 
 (defn validate-client-id!
   [client-id]
@@ -40,13 +42,14 @@
                     {:client-id client-id}))))
 
 (defn create-tui
-  [client-id]
-  (let [view-id (stable-node-id :tui client-id :view)
-        instance-id (stable-node-id :tui client-id :instance)
-        blocks-id (stable-node-id :tui client-id :blocks)]
-    {:client-id client-id, :view-id view-id, :instance-id instance-id,
-     :blocks-id blocks-id, :head-id nil, :tail-id nil, :next-index 0,
-     :client-count 0, :blocks []}))
+  ([client-id] (create-tui client-id :legacy))
+  ([client-id mode]
+   (let [view-id (stable-node-id :tui client-id :view)
+         instance-id (stable-node-id :tui client-id :instance)
+         blocks-id (stable-node-id :tui client-id :blocks)]
+     {:client-id client-id, :mode mode, :view-id view-id, :instance-id instance-id,
+      :blocks-id blocks-id, :head-id nil, :tail-id nil, :next-index 0,
+      :client-count 0, :blocks []})))
 
 (defn install-tui-instance
   [network {:keys [view-id instance-id blocks-id]}]
@@ -58,23 +61,35 @@
                                :blocks-id blocks-id})))
 
 (defn ensure-tui!
-  [session client-id]
-  (validate-client-id! client-id)
-  (let [state (ensure-session-state! session)]
-    (or (get-in state [:tuis client-id])
-        (let [tui (create-tui client-id)
+  ([session client-id] (ensure-tui! session client-id nil))
+  ([session client-id requested-mode]
+   (validate-client-id! client-id)
+   (let [state (ensure-session-state! session)]
+     (if-let [tui (get-in state [:tuis client-id])]
+       (do
+         (when (and requested-mode (not= requested-mode (:mode tui :legacy)))
+           (throw (ex-info "TUI client mode mismatch"
+                           {:client-id client-id
+                            :existing-mode (:mode tui :legacy)
+                            :requested-mode requested-mode})))
+         tui)
+        (let [tui (create-tui client-id (or requested-mode :legacy))
               n (install-tui-instance (:network state) tui)]
           (swap! session #(-> %
                               (assoc :network n)
                               (assoc-in [:tuis client-id] tui)))
-          tui))))
+          tui)))))
 
 (defn register-tui!
-  [session {:keys [client-id]}]
-  (let [tui (ensure-tui! session client-id)]
+  [session {:keys [client-id mode]}]
+  (let [mode (or mode :legacy)
+        tui (ensure-tui! session client-id mode)]
     (swap! session update-in [:tuis client-id :client-count] (fnil inc 0))
+    (when (and (= :versioned-premise mode) (empty? (:blocks tui)))
+      (append-tui-block! session {:client-id client-id :rebuild? false}))
     (let [tui (get-in @session [:tuis client-id])]
       {:client-id (:client-id tui), :view-id (pr-str (:view-id tui)),
+       :mode (:mode tui :legacy)
        :next-index (:next-index tui)})))
 
 (defn tui!
@@ -309,8 +324,17 @@
   (let [tui (get-in (require-state state) [:tuis client-id])]
     (when-not tui
       (throw (ex-info "tui client not found" {:client-id client-id})))
-    (let [referenced-indexes (referenced-block-indexes state (:blocks tui))]
+    (let [referenced-indexes (referenced-block-indexes state (:blocks tui))
+          current-versions (into {}
+                                 (map (fn [block]
+                                        [(:block-id block)
+                                         (some-> block :version-history peek :version)]))
+                                 (:blocks tui))
+          diagnostics (vals (get (net/network-dict-entry
+                                  (:program/net state) fvm/name-bindings-key)
+                                 definition/diagnostic-scope {}))]
       {:client-id client-id
+       :mode (:mode tui :legacy)
        :view-id (pr-str (:view-id tui))
        :changed-cells (mapv pr-str (:runtime/changed-cells state))
        :changed-node-ids (mapv pr-str (:runtime/changed-node-ids state))
@@ -319,9 +343,26 @@
                        (let [raw-value (block-view-content state block)]
                          (annotations/annotate-block-view
                           {:index (:index block)
+                           :version (some-> block :version-history peek :version)
+                           :source (some-> block :version-history peek :source)
                            :block-id (pr-str (:block-id block))
                            :text-id (pr-str (:text-id block))
                            :display-id (pr-str (:display-id block))
+                           :warnings (->> diagnostics
+                                          (mapcat identity)
+                                          (filter
+                                           (fn [diagnostic]
+                                             (and
+                                              (= (:definition-version diagnostic)
+                                                 (get current-versions
+                                                      (first (:definition-id diagnostic))))
+                                              (every? (fn [[block-id version]]
+                                                        (= version
+                                                           (get current-versions block-id)))
+                                                      (:caller-versions diagnostic)))))
+                                          (filter #(contains? (:block-ids %)
+                                                              (:block-id block)))
+                                          vec)
                            :referenced? (contains? referenced-indexes
                                                    (:index block))
                            :value (annotations/project-value
@@ -378,9 +419,11 @@
     (swap! session
            (fn [state]
              (let [count (get-in state [:tuis client-id :client-count] 0)
-                   next-count (max 0 (dec count))]
+                   next-count (max 0 (dec count))
+                   versioned? (= :versioned-premise
+                                  (get-in state [:tuis client-id :mode]))]
                (reset! remaining next-count)
-               (if (pos? next-count)
+               (if (or versioned? (pos? next-count))
                  (assoc-in state [:tuis client-id :client-count] next-count)
                  (update state :tuis dissoc client-id)))))
     {:client-id client-id, :remaining-clients @remaining,

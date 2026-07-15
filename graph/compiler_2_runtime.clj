@@ -10,6 +10,7 @@
             [graph.compiler-2-runtime.trace-session :as trace-session]
             [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
+            [graph.compiler-2-runtime.versioned-commit :as versioned-commit]
             [graph.compiler-2-runtime.xr-projection :as xr-projection]))
 
 (def new-session state/new-session)
@@ -33,6 +34,7 @@
 (def summarize-temperature temperature/summarize)
 (def drain-temperature! temperature/drain-summary!)
 (def register-tui! tui-session/register-tui!)
+(def commit-version! versioned-commit/commit-version!)
 
 (defn- with-trace-refresh!
   [session result]

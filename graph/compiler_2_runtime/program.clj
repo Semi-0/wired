@@ -10,6 +10,10 @@
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.language.ast :as ast]
+            [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.model.operator-value :as operator-value]
+            [propagators.compiler-2.operators.block-premise :as block-premise]
+            [propagators.compiler-2.operators.versioned-definition :as definition]
             [propagators.compiler-2.runtime.application :as compiler-app]
             [propagators.compiler-2.model.env :as cenv]
             [propagators.compiler-2.main :as compiler]
@@ -63,7 +67,7 @@
 (defn runtime-compile-options
   [opts]
   (assoc opts
-         :compiler runtime-compiler
+         :compiler (or (:compiler opts) runtime-compiler)
          :application-installer runtime-application-installer))
 
 (declare runtime-env
@@ -142,6 +146,33 @@
       (value/unusable? result) value/nothing
       (net/network? result) value/nothing
       :else result)))
+
+(defn install-result-premise
+  [compiled program-net context]
+  (let [raw-id (:cell compiled)
+        raw-value (scope-source/unwrap
+                   (net/network-cell-strongest program-net raw-id))
+        out-id (state/stable-node-id :compiler-2 :block-premise
+                                     (:premise/id context) :result)
+        contexts (conj (block-premise/binding-contexts program-net raw-id)
+                       context)]
+    (if (definition/public-definition-cell? program-net raw-id)
+      [compiled program-net]
+      (let [program-net (block-premise/record-binding-contexts
+                         program-net raw-id contexts)]
+        (if (or (net/network? raw-value)
+            (closure-value/closure-info? raw-value)
+            (operator-value/operator-closure? raw-value))
+          [compiled program-net]
+          (let [program-net (-> program-net
+                                (nb/ensure-cell out-id)
+                                (block-premise/record-binding-contexts out-id contexts))
+                [prop-id installed]
+                ((block-premise/p:block-premise
+                  [:block-result (:premise/id context)] raw-id contexts out-id)
+                 program-net)]
+            [(assoc compiled :cell out-id)
+             (nb/run-propagators installed [prop-id])]))))))
 
 (defn namespace-graph
   [graph prefix]
@@ -268,24 +299,31 @@
              ['% (cenv/cell-binding instance-id)]]))))
 
 (defn runtime-env
-  [runtime-state network base-env graph-id current-client-id scope-key]
-  (let [dynamic (dynamic-runtime-bindings runtime-state current-client-id)]
-    (if-not (ids/node-id? base-env)
-      (let [root-id (state/stable-node-id :compiler-2 :runtime-env :root)
-            initial (reduce (fn [environment [sym binding]]
-                              (cenv/bind-at environment sym binding 0))
-                            base-env
-                            (into dynamic (static-runtime-bindings graph-id)))
-            [network env-id] (cenv/import-environment network root-id initial)]
-        {:net network :env env-id :props []})
-      (let [child-id (state/stable-node-id :compiler-2 :runtime-env scope-key)
-            [scope-props network] ((cenv/p:sub-env base-env child-id)
-                                   (nb/ensure-cell network base-env))
-            declared (cenv/declare-bindings network child-id child-id dynamic)
-            props (into (vec scope-props) (:props declared))]
-        {:net (nb/run-propagators (:net declared) props)
-         :env child-id
-         :props props}))))
+  ([runtime-state network base-env graph-id current-client-id scope-key]
+   (runtime-env runtime-state network base-env graph-id current-client-id
+                scope-key {}))
+  ([runtime-state network base-env graph-id current-client-id scope-key
+    {:keys [fixed-scope?]}]
+   (let [dynamic (dynamic-runtime-bindings runtime-state current-client-id)]
+     (if-not (ids/node-id? base-env)
+       (let [root-id (state/stable-node-id :compiler-2 :runtime-env :root)
+             initial (reduce (fn [environment [sym binding]]
+                               (cenv/bind-at environment sym binding 0))
+                             base-env
+                             (into dynamic (static-runtime-bindings graph-id)))
+             [network env-id] (cenv/import-environment network root-id initial)]
+         {:net network :env env-id :props []})
+       (let [child-id (state/stable-node-id :compiler-2 :runtime-env scope-key)
+             scope-installer (if fixed-scope?
+                               (cenv/p:scope-frame base-env child-id)
+                               (cenv/p:sub-env base-env child-id))
+             [scope-props network] (scope-installer
+                                    (nb/ensure-cell network base-env))
+             declared (cenv/declare-bindings network child-id child-id dynamic)
+             props (into (vec scope-props) (:props declared))]
+         {:net (nb/run-propagators (:net declared) props)
+          :env child-id
+          :props props})))))
 
 (defn retained-application-props
   [program-net]
@@ -301,9 +339,38 @@
         (nb/run-propagators props)
         (nb/run-propagators props))))
 
+(defn refresh-semantic-graph
+  "Project the current compiled block receipts on demand for tracing."
+  [state]
+  (let [compiled (keep :compiled (vals (:program/results state)))
+        aggregate {:props (vec (distinct (mapcat :props compiled)))
+                   :applications (vec (distinct (mapcat :applications compiled)))
+                   :cell (some :cell (reverse (vec compiled)))
+                   :env (:program/env state)}
+        graph (semantic-trace/graph-union
+               (if (seq compiled)
+                 (semantic-repl/compiled-semantic-graph
+                  aggregate (:program/net state))
+                 (empty-graph)))
+        graph-id (runtime-graph-id)
+        network (-> (:program/net state)
+                    (nb/ensure-cell graph-id)
+                    (nb/seed-cell graph-id graph))
+        network (nb/run-propagators
+                 network (nb/neighbor-propagator-ids network graph-id))]
+    (assoc state :program/net network :program/graph graph :graph graph)))
+
 (defn compile-program-form
-  [state block epoch source]
-  (try
+  ([state block epoch source]
+   (compile-program-form state block epoch source {}))
+  ([state block epoch source
+    {:keys [fixed-scope? premise-context reuse-existing-bindings?
+            application-settler semantic-graph-projector]
+     :or {reuse-existing-bindings? true
+          application-settler settle-application-props
+          semantic-graph-projector semantic-repl/compiled-semantic-graph}
+     :as version-options}]
+   (try
     (let [source (normalize-trace-source source)
           source (auto-output-source state block source)
           needs-live-graph? (trace-form? source)
@@ -311,6 +378,7 @@
           graph-id (runtime-graph-id)
           program-net-input (-> (:program/net state)
                                 expose-application-boundary-outputs
+                                (nb/ensure-cell (boundary-outbox-id))
                                 (nb/install-cell graph-id
                                                  (:graph state)
                                                  (:graph state)))
@@ -319,14 +387,17 @@
                                    (:program/env state)
                                    graph-id
                                    (:client-id block)
-                                   [:block (:order block) (:epoch block)])
+                                   [:block (:order block) (:epoch block)]
+                                   {:fixed-scope? fixed-scope?})
           compiled (compiler/compile-source
                     source
                     (:env environment)
                     (runtime-compile-options
                      {:net (:net environment)
+                      :compiler (:compiler version-options)
+                      :block/premise-context premise-context
                       :seed [:runtime/block (:order block) (:epoch block)]
-                      :reuse-existing-bindings? true}))
+                      :reuse-existing-bindings? reuse-existing-bindings?}))
           program-net0 (nb/run-propagators (:net compiled) (:props compiled))
           program-net2 (if (and needs-live-graph?
                                 (not top-level-trace?))
@@ -346,13 +417,15 @@
                                                                 graph-id))]
                            (core/run-tasks tasks program-net1))
                          program-net0)
-          program-net (settle-application-props program-net2 (:props compiled))
+          program-net (application-settler program-net2 (:props compiled))
+          [compiled program-net]
+          (if premise-context
+            (install-result-premise compiled program-net premise-context)
+            [compiled program-net])
           graph (if top-level-trace?
                   (assoc (:graph state) :source source)
                   (let [graph* (namespace-graph
-                                (semantic-repl/compiled-semantic-graph
-                                 compiled
-                                 program-net)
+                                (semantic-graph-projector compiled program-net)
                                 (str (:client-id block) "-" (:order block)))]
                     (assoc (semantic-trace/graph-union
                             (:graph state)
@@ -375,7 +448,7 @@
                 [:program/results [(:client-id block) (:index block)]]
                 {:error (or (ex-message t) (str (class t)))
                  :class (str (class t))
-                 :data (ex-data t)}))))
+                 :data (ex-data t)})))))
 
 (defn rebuild-block
   [state epoch block]

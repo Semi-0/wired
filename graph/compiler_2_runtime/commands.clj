@@ -8,6 +8,7 @@
             [graph.compiler-2-runtime.trace-session :as trace-session]
             [graph.compiler-2-runtime.trace-subscriptions :as trace-subscriptions]
             [graph.compiler-2-runtime.tui-session :as tui-session]
+            [graph.compiler-2-runtime.versioned-commit :as versioned-commit]
             [graph.compiler-2-runtime.xr-projection :as xr-projection]))
 
 (def require-state state/require-state)
@@ -17,6 +18,7 @@
 (def submit-tui-block! tui-session/submit-tui-block!)
 (def read-tui-view tui-session/read-tui-view)
 (def unregister-tui! tui-session/unregister-tui!)
+(def commit-version! versioned-commit/commit-version!)
 (def read-agent-blocks tui-session/read-agent-blocks)
 (def read-agent-block tui-session/read-agent-block)
 (def send-agent-block! tui-session/send-agent-block!)
@@ -43,6 +45,7 @@
                         :tui/append-block (append-tui-block! session command)
                         :tui/edit-block (edit-tui-block! session command)
                         :tui/submit-block (submit-tui-block! session command)
+                        :tui/commit-version (commit-version! session command)
                         :tui/read-view (read-tui-view @session command)
                         :tui/unregister (unregister-tui! session command)
                         :agent/blocks (read-agent-blocks @session command)

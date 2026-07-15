@@ -60,8 +60,10 @@
 
 (defn block-text
   [state block]
-  (if (contains? block :source)
-    (:source block)
-    (if (contains? block :text-current)
-      (:text-current block)
-      (net/network-cell-strongest (:network state) (:text-id block)))))
+  (if-let [record (peek (vec (:version-history block)))]
+    (:source record)
+    (if (contains? block :source)
+      (:source block)
+      (if (contains? block :text-current)
+        (:text-current block)
+        (net/network-cell-strongest (:network state) (:text-id block))))))

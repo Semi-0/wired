@@ -77,23 +77,25 @@
                            channel-map))))))
 
 (defn apply-program-updates
-  [state updates]
-  (let [updates (vec (remove (comp nil? :cell-id) updates))
-        n0 (reduce (fn [n {:keys [cell-id]}]
-                     (nb/ensure-cell n cell-id))
-                   (:program/net state)
-                   updates)
-        [tasks n1] (core/eval-cells
-                    (mapv (fn [{:keys [cell-id update]}]
-                            (message cell-id update))
-                          updates)
-                    n0)
-        [state' n2] (temperature/run-tasks state
-                                           :propagation/program-updates
-                                           tasks
-                                           n1)
-        n3 (settle-application-props n2 [])]
-    (assoc state' :program/net n3)))
+  ([state updates]
+   (apply-program-updates state updates settle-application-props))
+  ([state updates application-settler]
+   (let [updates (vec (remove (comp nil? :cell-id) updates))
+         n0 (reduce (fn [n {:keys [cell-id]}]
+                      (nb/ensure-cell n cell-id))
+                    (:program/net state)
+                    updates)
+         [tasks n1] (core/eval-cells
+                     (mapv (fn [{:keys [cell-id update]}]
+                             (message cell-id update))
+                           updates)
+                     n0)
+         [state' n2] (temperature/run-tasks state
+                                            :propagation/program-updates
+                                            tasks
+                                            n1)
+         n3 (application-settler n2 [])]
+     (assoc state' :program/net n3))))
 
 (defn changed-candidate-cells
   [program-net updates]
