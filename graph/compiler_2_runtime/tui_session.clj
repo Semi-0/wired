@@ -285,28 +285,52 @@
   [state block]
   (block-text state block))
 
+(defn block-display-network
+  "Choose the network that owns the block's strongest display value.
+
+  Compiler output is declarative topology in :program/net. Legacy boundary
+  display writes still land in :network, so they remain the fallback."
+  [state block]
+  (let [client-id (:client-id (block-model/block-by-display-id
+                               state (:display-id block)))
+        versioned? (= :versioned-premise
+                      (get-in state [:tuis client-id :mode]))
+        program-net (:program/net state)
+        display-id (:display-id block)
+        program-content (when (and program-net
+                                   (contains? (net/net-env program-net)
+                                              display-id))
+                          (net/network-cell-content program-net display-id))]
+    (if (and versioned?
+             program-net
+             (not (value/nothing? program-content)))
+      program-net
+      (:network state))))
+
 (defn block-display-value
   [state block]
-  (net/network-cell-strongest (:network state) (:display-id block)))
+  (net/network-cell-strongest (block-display-network state block)
+                              (:display-id block)))
 
 (defn block-display-content
   [state block]
-  (net/network-cell-content (:network state) (:display-id block)))
+  (net/network-cell-content (block-display-network state block)
+                            (:display-id block)))
 
 (defn block-view-value
   [state block]
-  (let [display (when (nil? (:order block))
-                  (block-display-value state block))]
-    (if (and display (not (value/unusable? display)))
-      display
+  (let [display-content (when (nil? (:order block))
+                          (block-display-content state block))]
+    (if (and display-content (not (value/nothing? display-content)))
+      display-content
       (block-value state block))))
 
 (defn block-view-content
   [state block]
-  (let [display (when (nil? (:order block))
-                  (block-display-value state block))]
-    (if (and display (not (value/unusable? display)))
-      (block-display-content state block)
+  (let [display-content (when (nil? (:order block))
+                          (block-display-content state block))]
+    (if (and display-content (not (value/nothing? display-content)))
+      display-content
       (block-value state block))))
 
 (defn referenced-block-indexes

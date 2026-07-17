@@ -82,10 +82,8 @@
       source)))
 
 (defn auto-output-display-form
-  [source target-index]
-  (if (trace-form? source)
-    (format "(be:block-at %% %d __runtime_out)" target-index)
-    (format "(block-at %% %d __runtime_out)" target-index)))
+  [_source target-index]
+  (format "(be:block-at %% %d __runtime_out)" target-index))
 
 (defn auto-output-source [state block source]
   (if (or (top-level-declaration? source)

@@ -1,0 +1,43 @@
+{
+  "schema": "compiler-2/versioned-instance",
+  "schema-version": 1,
+  "clients": [
+    {"client-id": "debug", "mode": "versioned-premise"}
+  ],
+  "commits": [
+    {
+      "commit-id": "00000000-0000-0000-0000-000000000001",
+      "client-id": "debug",
+      "index": 0,
+      "expected-version": null,
+      "text": "(+ 1 10)"
+    },
+    {
+      "commit-id": "00000000-0000-0000-0000-000000000002",
+      "client-id": "debug",
+      "index": 0,
+      "expected-version": 0,
+      "text": "(+ 2 10)"
+    },
+    {
+      "commit-id": "00000000-0000-0000-0000-000000000003",
+      "client-id": "debug",
+      "index": 0,
+      "expected-version": 1,
+      "text": "(+ 3 10)"
+    },
+    {
+      "commit-id": "00000000-0000-0000-0000-000000000004",
+      "client-id": "debug",
+      "index": 0,
+      "expected-version": 2,
+      "text": "(+ 4 10)"
+    }
+  ],
+  "snapshot": {
+    "views": [],
+    "runtime-errors": [],
+    "outbox": {},
+    "topology": {}
+  }
+}

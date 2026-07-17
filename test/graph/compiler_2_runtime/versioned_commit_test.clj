@@ -60,7 +60,10 @@
       (is (= 0 (:version receipt0)))
       (is (:replayed? replay))
       (is (= topology0 (topology-size @session)))
-      (is (= 2 (count (get-in @session [:tuis "A" :blocks]))))
+      (is (= 3 (count (get-in @session [:tuis "A" :blocks]))))
+      (is (= ["42" 42 value/nothing]
+             (mapv :value (:blocks (runtime/read-tui-view
+                                    @session {:client-id "A"})))))
       (let [receipt (-> state0 (block-model/block-by-index "A" 0)
                         :version-history first :topology)]
         (is (vector? (:propagator-ids receipt)))
@@ -74,6 +77,7 @@
               old-state (net/network-cell-content (:program/net state1)
                                                   old-state-cell)]
           (is (= 1 (:version receipt1)))
+          (is (= 3 (count (get-in state1 [:tuis "A" :blocks]))))
           (is (= [0 1] (mapv :version (:version-history block))))
           (is (= c0 (-> block :version-history first :commit-id)))
           (is (every? #(contains? (net/net-env (:program/net state1)) %) ids0))
@@ -191,13 +195,14 @@
     (runtime/commit-version! session
                              (block-request c1 1 nil "(+ x 1)"))
     (is (= 5 (semantic-result @session "A" 1)))
-    (is (= 1 (count (net/network-dict-entry
+    (is (= 3 (count (net/network-dict-entry
                      (:program/net @session)
                      premise/application-dependence-key))))
-    (is (= 1 (count (filter #(and (prop/prop? %)
+    (is (= 3 (count (filter #(and (prop/prop? %)
                                    (= :compiler-2/application-premise
                                       (prop/prop-name %)))
-                            (vals (net/net-env (:program/net @session)))))))
+                            (vals (net/net-env (:program/net @session))))))
+        "caller, output transport, and next-block display carry premises")
     (let [caller-content (let [compiled (get-in @session
                                                 [:program/results ["A" 1]
                                                  :compiled])]

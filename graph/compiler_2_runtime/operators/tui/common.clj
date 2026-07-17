@@ -3,7 +3,11 @@
   (:require [graph.compiler-2-runtime.boundary :as boundary]
             [graph.compiler-2-runtime.ids :as runtime-ids]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.tms.distributed :as tms]
+            [propagators.compiler-2.operators.block-premise :as premise]
+            [propagators.gur.flat :as fvm]
             [propagators.ids :as ids]
+            [propagators.message :refer [message]]
             [propagators.network :as net]))
 
 (defn effect-slot-key [effect-id]
@@ -70,6 +74,36 @@
 (defn tui-display-effect-request
   [effect-id display-id payload tick]
   (boundary/tui-display-effect-request effect-id display-id payload tick))
+
+(defn supported-display-result
+  "Connect a premise-supported source directly to a TUI block display cell.
+
+  Returns nil for raw sources so explicit legacy display effects retain their
+  existing outbox behavior."
+  [network display-id source-id]
+  (let [contexts (vec (premise/binding-contexts network source-id))]
+    (when (seq contexts)
+      (let [state-ids (mapv :premise/state-cell contexts)
+            inputs (into [source-id] state-ids)
+            prop-id (runtime-ids/stable-node-id
+                     :tui :block-display display-id source-id)
+            activate
+            (fn [_inputs _outputs current]
+              (let [source-content (net/network-cell-content current source-id)
+                    update
+                    (if (tms/distributed-value? source-content)
+                      (tms/distributed-forward-update source-content)
+                      (premise/support-update
+                       [:tui/block-display display-id source-id]
+                       (net/network-cell-strongest current source-id)
+                       source-content
+                       (mapv #(net/network-cell-content current %) state-ids)
+                       contexts))]
+                (if update [(message display-id update)] [])))]
+        {:effects [(fvm/declare-prop prop-id
+                                     :runtime/tui-block-display
+                                     inputs [display-id] activate)]
+         :messages []}))))
 
 (defn trace-target-value
   [label source-id]

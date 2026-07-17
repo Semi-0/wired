@@ -27,12 +27,14 @@
                                            (= name (prop/prop-name %)))
                                      entries)))
         block-gates (named-count :compiler-2/block-premise)
-        application-premises (named-count :compiler-2/application-premise)]
+        application-premises (named-count :compiler-2/application-premise)
+        display-gates (named-count :runtime/tui-block-display)]
     {:cells (count (remove prop/prop? entries))
      :propagators (count (filter prop/prop? entries))
      :premise-gates (+ block-gates application-premises)
      :block-premise-gates block-gates
      :application-premises application-premises
+     :display-gates display-gates
      :retained-candidates
      (count (net/network-dict-entry (:program/net runtime-state)
                                     definition/candidates-key))

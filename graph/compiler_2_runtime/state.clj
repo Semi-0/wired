@@ -74,6 +74,7 @@
    :program/epoch 0
    :runtime/commit-tick 0
    :runtime/full-rebuild-fallbacks 0
+   :versioned/commit-log []
    :block-order []
    :next-order 0
    :traces {}

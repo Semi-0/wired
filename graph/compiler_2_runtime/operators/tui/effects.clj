@@ -13,6 +13,7 @@
 (def tui-write-effect-request common/tui-write-effect-request)
 (def tui-display-effect-request common/tui-display-effect-request)
 (def effect-tick common/effect-tick)
+(def supported-display-result common/supported-display-result)
 
 (defn- write-block-messages
   [network outbox-id text-id source-id read-block?]
@@ -44,24 +45,22 @@
   [network outbox-id display-id source-id]
   (let [target-value (when source-id
                        (net/network-cell-strongest network source-id))
-        tick (effect-tick network)
-        write-message (when (and display-id
-                                 source-id
-                                 (not (value/unusable? target-value)))
-                        (let [effect-id [:tui/write-display
-                                         display-id
-                                         tick
-                                         (hash target-value)]]
-                          (message outbox-id
-                                   (obj/compound-object
-                                    {(effect-slot-key effect-id)
-                                     (tui-display-effect-request effect-id
-                                                                 display-id
-                                                                 target-value
-                                                                 tick)}))))]
-    (cond-> []
-      write-message
-      (conj write-message))))
+        supported (when (and display-id source-id)
+                    (supported-display-result network display-id source-id))]
+    (if supported
+      supported
+      (let [tick (effect-tick network)
+            write-message
+            (when (and display-id source-id
+                       (not (value/unusable? target-value)))
+              (let [effect-id [:tui/write-display display-id tick
+                               (hash target-value)]]
+                (message outbox-id
+                         (obj/compound-object
+                          {(effect-slot-key effect-id)
+                           (tui-display-effect-request effect-id display-id
+                                                       target-value tick)}))))]
+        (cond-> [] write-message (conj write-message))))))
 
 (defn block-at-operator [outbox-id]
   (operator-value/operator-closure

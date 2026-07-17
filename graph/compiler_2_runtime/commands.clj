@@ -2,6 +2,7 @@
   "Public command dispatch for compiler-2 runtime."
   (:require [graph.compiler-2-runtime.cells :as cells]
             [graph.compiler-2-runtime.input :as input]
+            [graph.compiler-2-runtime.instance-replay :as instance-replay]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.temperature :as temperature]
@@ -33,6 +34,8 @@
 (def schedule-trace-refreshes! trace-subscriptions/schedule-refreshes!)
 (def read-xr-effects xr-projection/read-xr-effects)
 (def summarize-temperature temperature/summarize)
+(def export-instance instance-replay/export-instance)
+(def import-instance! instance-replay/import-instance!)
 
 (defn handle-command!
   [session {:keys [op source] :as command}]
@@ -48,6 +51,9 @@
                         :tui/commit-version (commit-version! session command)
                         :tui/read-view (read-tui-view @session command)
                         :tui/unregister (unregister-tui! session command)
+                        :instance/export (export-instance @session)
+                        :instance/import (import-instance! session
+                                                          (:manifest command))
                         :agent/blocks (read-agent-blocks @session command)
                         :agent/block (read-agent-block @session command)
                         :agent/send-block (send-agent-block! session command)
@@ -68,7 +74,9 @@
       (schedule-trace-refreshes! session)
       response)
     (catch Throwable t
-      (state/record-runtime-error! session {:op op} t)
+      ;; Import is transactional, including its diagnostic state.
+      (when-not (= :instance/import op)
+        (state/record-runtime-error! session {:op op} t))
       {:ok false
        :error (ex-message t)
        :data (ex-data t)})))

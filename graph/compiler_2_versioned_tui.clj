@@ -6,7 +6,8 @@
             [clojure.string :as str]
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-tui :as legacy-tui]
-            [graph.compiler-2-versioned-tui.editor :as editor])
+            [graph.compiler-2-versioned-tui.editor :as editor]
+            [propagators.cells.value :as value])
   (:import [java.util UUID]))
 
 (defn new-commit-id [] (str (UUID/randomUUID)))
@@ -22,7 +23,9 @@
            (when (some? source) (str "\n" source))
            (when (seq warnings)
              (str "\n! " (str/join ", " (map (comp name :warning) warnings))))
-           "\n=> " (legacy-tui/render-value value)))
+           (when (and (not (value/nothing? value))
+                      (not= source value))
+             (str "\n=> " (legacy-tui/render-value value)))))
     blocks)))
 
 (defn configure-viewport
@@ -89,16 +92,19 @@
     (= :quit (editor/action message))
     [model program/quit-cmd]
 
-    (= :select-up (editor/action message))
+    (and (not (:editing? model))
+         (= :select-up (editor/action message)))
     [(-> model (editor/select -1) configure-viewport) nil]
 
-    (= :select-down (editor/action message))
+    (and (not (:editing? model))
+         (= :select-down (editor/action message)))
     [(-> model (editor/select 1) configure-viewport) nil]
 
     (= :cancel (editor/action message))
     [(-> model editor/cancel-edit (update :input text-input/reset)) nil]
 
-    (= :edit (editor/action message))
+    (and (not (:editing? model))
+         (= :edit (editor/action message)))
     (let [model (editor/begin-edit model (new-commit-id))]
       [(update model :input text-input/set-value (:draft model "")) nil])
 
@@ -107,8 +113,7 @@
       (if (editor/commit-request model)
         [(editor/mark-attempted model) (commit-cmd model)]
         [model nil])
-      (let [model (editor/open-trailing-blank model (new-commit-id))]
-        [(update model :input text-input/set-value (:draft model "")) nil]))
+      [model nil])
 
     (:editing? model)
     (let [[input cmd] (text-input/text-input-update (:input model) message)
@@ -125,7 +130,7 @@
 (defn view
   [{:keys [client-id viewport input editing? stale? error]}]
   (str "compiler-2 versioned " client-id "\n"
-       "Ctrl+Up/Down select, Space edit, Ctrl+T commit, Esc discard, Ctrl+C quit\n"
+       "Up/Down select, Enter edit, Ctrl+T commit, Esc discard, Ctrl+C quit\n"
        (when stale? "STALE: refresh before committing\n")
        (when error (str "error: " error "\n"))
        "\n" (viewport/viewport-view viewport)

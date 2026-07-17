@@ -76,9 +76,12 @@
   [message]
   (cond
     (msg/key-match? message "ctrl+c") :quit
-    (msg/key-match? message "ctrl+up") :select-up
-    (msg/key-match? message "ctrl+down") :select-down
+    (or (msg/key-match? message :up)
+        (msg/key-match? message "ctrl+up")) :select-up
+    (or (msg/key-match? message :down)
+        (msg/key-match? message "ctrl+down")) :select-down
     (msg/key-match? message "ctrl+t") :commit
     (msg/key-match? message :esc) :cancel
-    (msg/key-match? message " ") :edit
+    (or (msg/key-match? message :enter)
+        (msg/key-match? message " ")) :edit
     :else nil))

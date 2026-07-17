@@ -4,6 +4,7 @@
             [graph.compiler-2-runtime.commands :as commands]
             [graph.compiler-2-runtime.effects :as effects]
             [graph.compiler-2-runtime.input :as input]
+            [graph.compiler-2-runtime.instance-replay :as instance-replay]
             [graph.compiler-2-runtime.program :as program]
             [graph.compiler-2-runtime.state :as state]
             [graph.compiler-2-runtime.temperature :as temperature]
@@ -35,6 +36,8 @@
 (def drain-temperature! temperature/drain-summary!)
 (def register-tui! tui-session/register-tui!)
 (def commit-version! versioned-commit/commit-version!)
+(def export-instance instance-replay/export-instance)
+(def import-instance! instance-replay/import-instance!)
 
 (defn- with-trace-refresh!
   [session result]

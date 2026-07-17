@@ -12,6 +12,7 @@
             [graph.compiler-2-runtime.version-history :as history]
             [propagators.compiler-2.operators.block-premise :as premise]
             [propagators.compiler-2.operators.versioned-definition :as definition]
+            [propagators.cells.value :as value]
             [propagators.core :as core]
             [propagators.message :refer [message]]
             [propagators.network-builder :as nb])
@@ -53,6 +54,15 @@
           :premise-id (:premise-id record)}
          extra))
 
+(def replay-commit-keys
+  [:commit-id :client-id :index :expected-version :text])
+
+(defn replay-commit
+  [request]
+  (into {}
+        (map (fn [k] [k (get request k)]))
+        replay-commit-keys))
+
 (defn- committed-request
   [runtime-state commit-id]
   (some #(history/commit-by-id % commit-id)
@@ -78,6 +88,14 @@
   (if (some? (:order (block-model/block-by-index runtime-state client-id index)))
     runtime-state
     (block-model/assign-source-order runtime-state client-id index)))
+
+(defn- ensure-next-block
+  [runtime-state client-id index]
+  (if (block-model/block-by-index runtime-state client-id (inc index))
+    runtime-state
+    (let [candidate (atom runtime-state)]
+      (tui-session/ensure-block-index! candidate client-id (inc index))
+      @candidate)))
 
 (defn- update-runtime-text
   [runtime-state block text]
@@ -193,6 +211,9 @@
       (let [runtime-state (assign-commit-order runtime-state
                                                (:client-id request)
                                                (:index request))
+            runtime-state (ensure-next-block runtime-state
+                                             (:client-id request)
+                                             (:index request))
             block (assoc (versioned-block runtime-state request)
                          :client-id (:client-id request))
             version (:version decision)
@@ -224,14 +245,21 @@
                           (block-model/update-block
                            (:client-id request) (:index request)
                            #(history/append-version % record))
+                          (update :versioned/commit-log
+                                  (fnil conj [])
+                                  (replay-commit request))
                           (update-runtime-text block (:text request)))]
         {:state committed
          :receipt (receipt record)}))))
 
 (defn- trailing-blank?
   [runtime-state client-id]
-  (let [block (peek (get-in runtime-state [:tuis client-id :blocks]))]
-    (and block (empty? (:version-history block)))))
+  (let [block (peek (:blocks (tui-session/read-tui-view
+                             runtime-state {:client-id client-id})))]
+    (and block
+         (nil? (:source block))
+         (value/nothing? (:value block))
+         (not (:referenced? block)))))
 
 (defn commit-version!
   [session request]

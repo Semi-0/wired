@@ -5,7 +5,9 @@
             [clojure.walk :as walk]
             [graph.compiler-2-runtime :as runtime]
             [graph.compiler-2-runtime.file-loader :as file-loader]
+            [graph.compiler-2-runtime-json-server :as json-server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
+            [graph.json :as json]
             [graph.xr-server :as xr-server]
             [propagators.cells.cell :as cell]
             [propagators.graph :as pgraph]
@@ -21,6 +23,7 @@
 (def default-host "127.0.0.1")
 (def default-port 45555)
 (def default-udp-port default-port)
+(def default-json-port json-server/default-port)
 (def default-load-blocks 1)
 (def ^:private max-udp-packet-size 65507)
 (def ^:private temperature-log-interval-ms 5000)
@@ -32,7 +35,7 @@
   (.write writer "\n")
   (.flush writer))
 
-(defn- transport-value [value]
+(defn transport-value [value]
   (walk/postwalk
    (fn [x]
      (cond
@@ -402,6 +405,29 @@
             :xr xr
             :close close-server))))
 
+(defn attach-json-server
+  "Attach the additive JSON debugging socket to an existing runtime server."
+  ([server]
+   (attach-json-server server default-json-port))
+  ([server json-port]
+   (let [close-runtime (:close server)]
+     (try
+       (let [json-runtime
+             (json-server/start-server
+              json-port
+              #(transport-value (handle-runtime-command! server %)))]
+         (assoc server
+                :json json-runtime
+                :json-port (:port json-runtime)
+                :close (fn []
+                         (try
+                           ((:close json-runtime))
+                           (finally
+                             (close-runtime))))))
+       (catch Throwable t
+         (close-runtime)
+         (throw t))))))
+
 (defn request
   ([command] (request default-host default-port command))
   ([host port command]
@@ -452,7 +478,8 @@
                :load-file nil
                :load-client-id nil
                :load-blocks default-load-blocks
-               :udp-port default-udp-port}]
+               :udp-port default-udp-port
+               :json-port default-json-port}]
     (if-let [arg (first args)]
       (case arg
         ("--xr" "-xr")
@@ -502,6 +529,10 @@
         ("--udp-port" "-udp-port")
         (recur (nnext args)
                (assoc opts :udp-port (Long/parseLong (second args))))
+
+        ("--json-port" "-json-port")
+        (recur (nnext args)
+               (assoc opts :json-port (Long/parseLong (second args))))
 
         ("--load" "--load-file" "-load")
         (recur (nnext args)
@@ -567,6 +598,8 @@
     (println (separator width))
     (println (str "lain-lang server on " default-host ":" (:port server)))
     (println (str "agent UDP API on " default-host ":" (:udp-port server)))
+    (when-let [json-port (:json-port server)]
+      (println (str "instance JSON API on " default-host ":" json-port)))
     (when-let [xr (:xr server)]
       (println (str "XR runtime on " (:scheme xr) "://" (:host xr) ":"
                     (:port xr) "/")))))
@@ -580,13 +613,14 @@
   [& args]
   (case (first args)
     "server"
-    (let [{:keys [port xr? xr-port xr-host xr-tls udp-port dashboard?]
+    (let [{:keys [port xr? xr-port xr-host xr-tls udp-port json-port dashboard?]
            :as opts}
           (parse-server-args (next args))
-          server (binding [*temperature-logger-enabled?* (not dashboard?)]
-                   (if xr?
-                     (start-server-with-xr port xr-port udp-port xr-host xr-tls)
-                     (start-server port xr-port udp-port xr-host xr-tls)))
+          server (-> (binding [*temperature-logger-enabled?* (not dashboard?)]
+                       (if xr?
+                         (start-server-with-xr port xr-port udp-port xr-host xr-tls)
+                         (start-server port xr-port udp-port xr-host xr-tls)))
+                     (attach-json-server json-port))
           close-on-finally? (atom dashboard?)]
       (try
         (print-launch-banner server)
@@ -614,6 +648,44 @@
     (let [[_ port source] args]
       (prn (udp-request default-host (parse-port port) (edn/read-string source))))
 
+    "json-request"
+    (let [[_ port source] args]
+      (println (json/write-json
+                (json-server/request default-host
+                                     (if (str/blank? port)
+                                       default-json-port
+                                       (Long/parseLong port))
+                                     (json/read-json source)))))
+
+    "json-export"
+    (let [[_ port file] args
+          response (json-server/request
+                    default-host
+                    (if (str/blank? port)
+                      default-json-port
+                      (Long/parseLong port))
+                    {:op "instance/export"})
+          output (json/write-json (if (:ok response)
+                                    (:result response)
+                                    response))]
+      (if file
+        (spit file (str output "\n"))
+        (println output)))
+
+    "json-import"
+    (let [[_ port file] args]
+      (when-not file
+        (throw (ex-info "json-import requires a manifest file" {})))
+      (println
+       (json/write-json
+        (json-server/request
+         default-host
+         (if (str/blank? port)
+           default-json-port
+           (Long/parseLong port))
+         {:op "instance/import"
+          :manifest (json/read-json (slurp file))}))))
+
     "graph"
     (let [[_ port] args
           response (request default-host (parse-port port) {:op :semantic/graph})]
@@ -632,4 +704,4 @@
         (semantic-repl/print-graph (:result response))
         (prn response)))
 
-    (println "usage: server [port] [--load <file.lain>] [--load-client <client-id> --load-blocks <n>] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | graph <port> | trace <port> <label>")))
+    (println "usage: server [port] [--json-port <port>] [--load <file.lain>] [--load-client <client-id> --load-blocks <n>] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | json-request <port> '<json>' | json-export <port> [file] | json-import <port> <file> | graph <port> | trace <port> <label>")))
