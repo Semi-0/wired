@@ -4,8 +4,8 @@
             [charm.message :as msg]
             [charm.program :as program]
             [clojure.string :as str]
-            [graph.compiler-2-runtime :as runtime]
-            [graph.compiler-2-runtime.temperature-plot :as plot]))
+            [propagators.compiler-2.runtime :as runtime]
+            [graph.compiler-2-temperature-plot :as plot]))
 
 (def views [:temperature :clients :xr])
 

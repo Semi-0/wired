@@ -9,7 +9,9 @@
             [propagators.compiler-2.deprecated.core :as deprecated-core]
             [propagators.compiler-2.deprecated.synchronous :as synchronous]
             [propagators.compiler-2.main :as main]
-            [propagators.compiler-2.predicate-core :as predicate-shim]))
+            [propagators.compiler-2.predicate-core :as predicate-shim]
+            [propagators.compiler-2.runtime :as runtime]
+            [graph.compiler-2-runtime :as runtime-shim]))
 
 (deftest cps-is-the-canonical-production-compiler
   (is (identical? main/default-compiler compiler/default-compiler))
@@ -45,3 +47,11 @@
   (is (identical? main/g:compile core/g:compile))
   (is (identical? main/g:apply core/g:apply))
   (is (identical? main/g:advance core/g:advance)))
+
+(deftest live-runtime-is-owned-by-propagators
+  (is (not (:deprecated (meta (find-ns
+                               'propagators.compiler-2.runtime)))))
+  (is (:deprecated (meta (find-ns 'graph.compiler-2-runtime))))
+  (is (identical? runtime/new-session runtime-shim/new-session))
+  (is (identical? runtime/compile-source! runtime-shim/compile-source!))
+  (is (identical? runtime/commit-version! runtime-shim/commit-version!)))

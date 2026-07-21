@@ -3,8 +3,8 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.walk :as walk]
-            [graph.compiler-2-runtime :as runtime]
-            [graph.compiler-2-runtime.file-loader :as file-loader]
+            [propagators.compiler-2.runtime :as runtime]
+            [propagators.compiler-2.runtime.session.file-loader :as file-loader]
             [graph.compiler-2-runtime-json-server :as json-server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.json :as json]
@@ -18,7 +18,8 @@
            [java.lang Character$UnicodeBlock]
            [java.net DatagramPacket DatagramSocket InetAddress
             ServerSocket Socket]
-           [java.nio.charset StandardCharsets]))
+           [java.nio.charset StandardCharsets]
+           [java.util UUID]))
 
 (def default-host "127.0.0.1")
 (def default-port 45555)
@@ -704,4 +705,54 @@
         (semantic-repl/print-graph (:result response))
         (prn response)))
 
-    (println "usage: server [port] [--json-port <port>] [--load <file.lain>] [--load-client <client-id> --load-blocks <n>] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | json-request <port> '<json>' | json-export <port> [file] | json-import <port> <file> | graph <port> | trace <port> <label>")))
+    "block-list"
+    (let [[_ port client-id] args]
+      (prn (request default-host (parse-port port)
+                    {:op :agent/blocks :client-id client-id})))
+
+    "block-show"
+    (let [[_ port client-id index] args]
+      (prn (request default-host (parse-port port)
+                    {:op :agent/block
+                     :client-id client-id
+                     :index (Long/parseLong index)
+                     :detail? true})))
+
+    "block-focus"
+    (let [[_ port client-id index] args]
+      (prn (request default-host (parse-port port)
+                    {:op :tui/focus-block
+                     :client-id client-id
+                     :index (Long/parseLong index)
+                     :request-id (str (UUID/randomUUID))})))
+
+    "block-send"
+    (let [[_ port client-id source] args]
+      (prn (request default-host (parse-port port)
+                    {:op :agent/send-block
+                     :client-id client-id
+                     :text source})))
+
+    "block-load"
+    (let [[_ port client-id file revision] args
+          expression (list 'load-blocks file
+                           (if revision (Long/parseLong revision) 0))]
+      (prn (request default-host (parse-port port)
+                    {:op :agent/send-block
+                     :client-id client-id
+                     :text (pr-str expression)})))
+
+    "block-save"
+    (let [[_ port client-id file mode selection checkpoint] args
+          selection (if (#{":all" "all"} selection)
+                      :all
+                      (edn/read-string selection))
+          expression (list 'save-blocks file
+                           (keyword (str/replace-first mode #"^:" ""))
+                           selection checkpoint)]
+      (prn (request default-host (parse-port port)
+                    {:op :agent/send-block
+                     :client-id client-id
+                     :text (pr-str expression)})))
+
+    (println "usage: server [port] [--json-port <port>] [--load <file.lain>] [--load-client <client-id> --load-blocks <n>] [--xr] [--no-dashboard] [--xr-port <port>] [--xr-host <host>|--xr-lan] [--xr-https --xr-keystore <path> --xr-keystore-password <password>] [--udp-port <port>] | request <port> '<edn>' | udp-request <port> '<edn>' | json-request <port> '<json>' | json-export <port> [file] | json-import <port> <file> | graph <port> | trace <port> <label> | block-list PORT CLIENT | block-show PORT CLIENT INDEX | block-focus PORT CLIENT INDEX | block-send PORT CLIENT SOURCE | block-load PORT CLIENT FILE [REVISION] | block-save PORT CLIENT FILE MODE SELECTION CHECKPOINT")))

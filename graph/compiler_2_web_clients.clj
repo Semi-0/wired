@@ -1,8 +1,8 @@
 (ns graph.compiler-2-web-clients
   "Independent web-client runtime instances coordinated through compiler-2 bridges."
-  (:require [graph.compiler-2-runtime :as runtime]
-            [graph.compiler-2-runtime.file-loader :as file-loader]
-            [graph.compiler-2-runtime.web-bridge :as bridge]
+  (:require [propagators.compiler-2.runtime :as runtime]
+            [propagators.compiler-2.runtime.session.file-loader :as file-loader]
+            [propagators.compiler-2.runtime.bridge.web :as bridge]
             [propagators.cells.value :as value]
             [propagators.compiler-2.model.env :as cenv]
             [propagators.datastructures.compound-object :as obj]

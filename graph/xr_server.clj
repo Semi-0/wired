@@ -4,7 +4,7 @@
             [clojure.string :as str]
             [graph.json :as json]
             [graph.xr-runtime :as xr]
-            [graph.compiler-2-runtime :as runtime])
+            [propagators.compiler-2.runtime :as runtime])
   (:import [java.io BufferedInputStream BufferedOutputStream ByteArrayOutputStream]
            [java.net ServerSocket Socket URLDecoder]
            [java.nio ByteBuffer]

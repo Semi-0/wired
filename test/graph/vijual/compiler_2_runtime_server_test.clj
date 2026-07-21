@@ -6,10 +6,10 @@
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [graph.compiler-2-runtime :as runtime]
+            [propagators.compiler-2.runtime :as runtime]
             [graph.compiler-2-runtime-dashboard :as dashboard]
-            [graph.compiler-2-runtime.temperature-plot :as temperature-plot]
-            [graph.compiler-2-runtime.tui-annotations :as tui-annotations]
+            [graph.compiler-2-temperature-plot :as temperature-plot]
+            [propagators.compiler-2.runtime.tui.annotations :as tui-annotations]
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]
@@ -107,7 +107,7 @@
     (is (empty? (:edges trace)))))
 
 (deftest runtime-rebuild-has-no-source-special-forms
-  (let [runtime-source (slurp "graph/compiler_2_runtime.clj")]
+  (let [runtime-source (slurp "propagators/compiler_2/runtime.clj")]
     (is (not (str/includes? runtime-source "runtime-sync-form?")))
     (is (not (str/includes? runtime-source "runtime-trace-form?")))
     (is (not (str/includes? runtime-source "rebuild-sync-form")))

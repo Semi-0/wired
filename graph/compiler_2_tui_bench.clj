@@ -2,8 +2,8 @@
   "Small benchmark for wired TUI trace rebuild/poll/render paths."
   (:require [clojure.string :as str]
             [graph.compiler-2-runtime-server :as server]
-            [graph.compiler-2-runtime :as runtime]
-            [graph.compiler-2-runtime.input :as runtime-input]
+            [propagators.compiler-2.runtime :as runtime]
+            [propagators.compiler-2.runtime.session.input :as runtime-input]
             [graph.compiler-2-tui :as tui]
             [propagators.cells.cell-protocol :as cell-protocol]
             [propagators.compiler-2.model.env :as cenv]

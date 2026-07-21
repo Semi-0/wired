@@ -30,10 +30,19 @@
 
 (defn configure-viewport
   [model]
-  (assoc model :viewport
-         (viewport/viewport-set-content
-          (:viewport model)
-          (render-blocks (:view model) (:selected model)))))
+  (let [blocks (get-in model [:view :blocks])
+        selected (:selected model)
+        line-offset (->> (take selected blocks)
+                         (map-indexed (fn [position block]
+                                        (inc (count (str/split-lines
+                                                     (render-blocks
+                                                      {:blocks [block]}
+                                                      position))))))
+                         (reduce + 0))
+        viewport (viewport/viewport-set-content
+                  (:viewport model)
+                  (render-blocks (:view model) selected))]
+    (assoc model :viewport (viewport/viewport-scroll-to viewport line-offset))))
 
 (defn poll-cmd
   [{:keys [host port client-id poll-ms]}]
@@ -62,6 +71,7 @@
    :poll-ms poll-ms
    :view {:blocks []}
    :selected 0
+   :focus-seq 0
    :input (text-input/text-input :prompt "edit> ")
    :viewport (viewport/viewport "" :height 20)
    :error nil})
@@ -101,7 +111,8 @@
     [(-> model (editor/select 1) configure-viewport) nil]
 
     (= :cancel (editor/action message))
-    [(-> model editor/cancel-edit (update :input text-input/reset)) nil]
+    [(-> model editor/cancel-edit (update :input text-input/reset)
+         configure-viewport) nil]
 
     (and (not (:editing? model))
          (= :edit (editor/action message)))

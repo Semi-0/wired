@@ -31,8 +31,17 @@
 
 (defn cancel-edit
   [model]
-  (dissoc model :editing? :draft :draft-commit-id :expected-version
-          :attempted? :stale?))
+  (let [model (dissoc model :editing? :draft :draft-commit-id
+                      :expected-version :attempted? :stale?)]
+    (if-let [focus (:pending-focus model)]
+      (let [position (some (fn [[position block]]
+                             (when (= (:index focus) (:index block)) position))
+                           (map-indexed vector (get-in model [:view :blocks])))]
+        (cond-> (-> model
+                    (assoc :focus-seq (:sequence focus))
+                    (dissoc :pending-focus))
+          position (assoc :selected position)))
+      model)))
 
 (defn edit-draft
   [model text new-commit-id]
@@ -62,10 +71,23 @@
   [model view]
   (let [remote-version (some-> view :blocks (get (:selected model 0)) :version)
         stale? (and (:editing? model)
-                    (not= remote-version (:expected-version model)))]
-    (cond-> (assoc model :view view)
-      (:editing? model) (assoc :stale? stale?)
-      true clamp-selection)))
+                    (not= remote-version (:expected-version model)))
+        focus (:focus view)
+        unseen? (and focus
+                     (> (long (:sequence focus 0))
+                        (long (:focus-seq model 0))))
+        position (when unseen?
+                   (some (fn [[position block]]
+                           (when (= (:index focus) (:index block)) position))
+                         (map-indexed vector (:blocks view))))
+        model (cond-> (assoc model :view view)
+                (:editing? model) (assoc :stale? stale?)
+                (and unseen? (:editing? model)) (assoc :pending-focus focus)
+                (and unseen? (not (:editing? model)))
+                (assoc :focus-seq (:sequence focus))
+                (and unseen? (not (:editing? model)) position)
+                (assoc :selected position))]
+    (clamp-selection model)))
 
 (defn open-trailing-blank
   [model commit-id]

@@ -6,7 +6,7 @@
   (:require [clojure.edn :as edn]
             [clojure.set :as set]
             [clojure.string :as str]
-            [graph.compiler-2-runtime :as runtime]
+            [propagators.compiler-2.runtime :as runtime]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.cells.value :as value]
             [propagators.compiler-2.model.env :as cenv]
