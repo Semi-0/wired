@@ -383,6 +383,7 @@
       :udp-port (:port udp)
       :close (fn []
                (reset! running? false)
+               (runtime/stop-clocks! session)
                (when-let [xr (:server @xr-state)]
                  ((:close xr)))
                ((:close temperature))

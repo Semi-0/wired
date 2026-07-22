@@ -1,0 +1,2 @@
+(def-cell inspect:retraction-summary [report]
+  (inspect:summary report))
