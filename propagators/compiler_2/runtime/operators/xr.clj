@@ -6,6 +6,8 @@
             [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.event :as event]
+            [propagators.datastructures.tms :as tms]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.semantic-trace :as semantic-trace]))
@@ -29,14 +31,34 @@
 (defn- trace-graph-value
   [v]
   (cond
+    (value/unusable? v)
+    nil
+
     (semantic-trace/semantic-trace-graph? v)
     v
+
+    (event/event-projection? v)
+    (let [graphs (->> (obj/public-slot-keys v)
+                      (keep #(trace-graph-value (obj/slot-value v %)))
+                      distinct
+                      vec)]
+      (when (= 1 (count graphs))
+        (first graphs)))
+
+    (or (event/event-content? v)
+        (event/event-fact? v))
+    (trace-graph-value (event/strongest-value v))
+
+    (tms/distributed-value? v)
+    (let [projected (tms/strongest-distributed-value v)]
+      (when-not (value/unusable? projected)
+        (trace-graph-value (tms/distributed-base-value projected))))
 
     :else
     (let [base (or (behavior/base-value (behavior/strongest-value v))
                    (behavior/base-value v))]
-      (when (semantic-trace/semantic-trace-graph? base)
-        base))))
+      (when base
+        (trace-graph-value base)))))
 
 (defn- xr-launch-messages
   [network outbox-id trace-id receipt-id]

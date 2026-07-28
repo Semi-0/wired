@@ -23,7 +23,9 @@
          (str "\n! " (str/join ", " (map (comp name :warning) warnings))))
        (when (and (not (value/nothing? value))
                   (not= source value))
-         (str "\n=> " (legacy-tui/render-value value)))))
+         (str "\n"
+              (when-not (legacy-tui/graph-value? value) "=> ")
+              (legacy-tui/render-value value)))))
 
 (defn rendered-blocks
   [{:keys [blocks]} selected]
