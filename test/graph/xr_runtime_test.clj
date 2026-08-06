@@ -24,6 +24,15 @@
   [session label]
   (cenv/binding-id (cenv/lookup (:program/env @session) (symbol label))))
 
+(def behavior-declaration-forms
+  ["(def-cells a-events a b-events b c-events c)"
+   "(be:latest a-events a)"
+   "(be:latest b-events b)"
+   "(be:latest c-events c)"])
+
+(def behavior-declarations-source
+  (str/join "\n" behavior-declaration-forms))
+
 (defn- raw-graph-value-for-cell
   [session cell-id]
   (let [graph (:graph @session)
@@ -309,10 +318,10 @@
   (let [session (runtime/new-session)]
     (xr/handle-command! session
                         {:op :xr/extend-graph
-                         :source "(define-behaviors a b c)
-                                  (def out)
-                                  (io:slider-panel a b c)
-                                  (<-> (be:- (be:+ a b) c) out)"})
+                         :source (str behavior-declarations-source
+                                      "\n(def out)
+                                       (io:slider-panel a b c)
+                                       (<-> (be:- (be:+ a b) c) out)")})
     (let [widget (get-in @session [:xr :widgets "slider-panel-0"])]
       (is (= "slider-panel" (:type widget)))
       (doseq [label ["a" "b" "c"]]
@@ -377,13 +386,13 @@
 (deftest xr-widget-event-response-does-not-replace-traced-graph
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [source ["(define-behaviors a b c)"
-                    "(def out)"
-                    "(<-> (be:- (be:+ a b) c) out)"
-                    "(let-cell [g]
-                       (trace out g)
-                       (io:xr g))"
-                    "(io:slider-panel a b c)"]]
+    (doseq [source (concat behavior-declaration-forms
+                           ["(def out)"
+                            "(<-> (be:- (be:+ a b) c) out)"
+                            "(let-cell [g]
+                               (trace out g)
+                               (io:xr g))"
+                            "(io:slider-panel a b c)"])]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
     (let [response (xr/handle-command! session {:op :xr/widget-event
                                                 :widget-id "slider-panel-0"
@@ -456,10 +465,10 @@
                3)))))
 
 (def complex-widget-behavior-source
-  "(define-behaviors a b c)
-   (def out)
-   (io:slider-panel-name \"mix\" a b c)
-   (<-> (be:- (be:+ a b) c) out)")
+  (str behavior-declarations-source
+       "\n(def out)
+        (io:slider-panel-name \"mix\" a b c)
+        (<-> (be:- (be:+ a b) c) out)"))
 
 (def user-route-widget-behavior-extension
   "(def a-events)
@@ -904,7 +913,7 @@
                             vals
                             frequencies)]
     (runtime/handle-command! session {:op :tui/register :client-id "A"})
-    (doseq [source ["(def-behaviors a b c)"
+    (doseq [source ["(def-cells a b c)"
                     "(def out)"
                     "(def g)"
                     "(trace out g)"
@@ -941,7 +950,7 @@
                             vals
                             frequencies)]
     (runtime/handle-command! session {:op :tui/register :client-id "A"})
-    (doseq [source ["(def-behaviors a b c)"
+    (doseq [source ["(def-cells a b c)"
                     "(def out)"
                     "(def g)"
                     "(trace out g)"
@@ -1099,13 +1108,13 @@
 (deftest xr-effect-payload-includes-widgets-registered-after-io-xr
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [source ["(define-behaviors a b c)"
-                    "(def out)"
-                    "(<-> (be:- (be:+ a b) c) out)"
-                    "(let-cell [g]
-	                       (trace out g)
-	                       (io:xr g))"
-	                    "(io:slider-panel a b c)"]]
+    (doseq [source (concat behavior-declaration-forms
+                           ["(def out)"
+                            "(<-> (be:- (be:+ a b) c) out)"
+                            "(let-cell [g]
+		                       (trace out g)
+		                       (io:xr g))"
+		                    "(io:slider-panel a b c)"])]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
     (is (wait-for-xr-launch session))
     (let [payload (#'xr-server/latest-effect-payload session)
@@ -1290,14 +1299,14 @@
 (deftest io-xr-relaunches-on-widget-update-after-be-block-rebuild
   (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [source ["(define-behaviors a b c)"
-                    "(def out)"
-                    "(<-> (be:- (be:+ a b) c) out)"
-                    "(let-cell [g]
-                       (trace out g)
-                       (io:xr g))"
-	                    "(io:slider-panel a b c)"
-	                    "(-> out (be:block 7))"]]
+    (doseq [source (concat behavior-declaration-forms
+                           ["(def out)"
+                            "(<-> (be:- (be:+ a b) c) out)"
+                            "(let-cell [g]
+                               (trace out g)
+                               (io:xr g))"
+		                    "(io:slider-panel a b c)"
+		                    "(-> out (be:block 7))"])]
       (runtime/append-tui-block! session {:client-id "A" :text source}))
     (is (wait-for-xr-launch session))
     (doseq [[channel value] [["a" 76] ["b" 4] ["c" 3]]]
