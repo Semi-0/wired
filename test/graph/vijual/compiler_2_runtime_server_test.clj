@@ -9,7 +9,7 @@
             [propagators.compiler-2.runtime :as runtime]
             [graph.compiler-2-runtime-dashboard :as dashboard]
             [graph.compiler-2-temperature-plot :as temperature-plot]
-            [propagators.compiler-2.runtime.tui.annotations :as tui-annotations]
+            [propagators.compiler-2.runtime.inspection.annotations :as tui-annotations]
             [graph.compiler-2-runtime-server :as server]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [graph.compiler-2-tui :as tui]

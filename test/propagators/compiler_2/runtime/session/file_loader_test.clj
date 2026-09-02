@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [propagators.compiler-2.runtime :as runtime]
             [propagators.compiler-2.runtime.session.file-loader :as loader]
-            [propagators.compiler-2.runtime.tui.annotations :as annotations]
+            [propagators.compiler-2.runtime.inspection.annotations :as annotations]
             [propagators.compiler-2.runtime.bridge.web :as bridge]
             [graph.compiler-2-runtime-server :as server]
             [propagators.compiler-2.model.env :as cenv]

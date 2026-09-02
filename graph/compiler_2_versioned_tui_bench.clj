@@ -1,11 +1,11 @@
 (ns graph.compiler-2-versioned-tui-bench
   "Diagnostic topology/latency receipt for versioned block commits."
   (:require [propagators.compiler-2.runtime :as runtime]
-            [propagators.compiler-2.runtime.tui.block-model :as block-model]
+            [propagators.compiler-2.runtime.session.block-model :as block-model]
             [propagators.compiler-2.runtime.session.input :as input]
             [propagators.compiler-2.runtime.session.program :as program]
             [propagators.compiler-2.runtime.inspection.temperature :as temperature]
-            [propagators.compiler-2.runtime.tui.version-history :as history]
+            [propagators.compiler-2.runtime.session.version-history :as history]
             [graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.compiler-2.main :as compiler]
             [propagators.compiler-2.model.application-value :as application-value]
