@@ -1,0 +1,16 @@
+{:paths ["src"]
+ :deps {io.github.Semi-0/propagators-infra
+        {:git/url "https://github.com/Semi-0/propagators-infra.git"
+         :git/sha "4f541bd7b1c250be23ab422466333f885f696cc8"}
+        io.github.Semi-0/propagators-compiler
+        {:git/url "https://github.com/Semi-0/propagators-compiler.git"
+         :git/sha "265c2a4cfd2e44a24ec4ec8a4e9c7f11fc088296"}
+        io.github.Semi-0/propagators-runtime
+        {:git/url "https://github.com/Semi-0/propagators-runtime.git"
+         :git/sha "cefdb6d7b240ef2e337e202681a80e10c8e907b4"}
+        io.github.TimoKramer/charm.clj
+        {:git/url "https://github.com/TimoKramer/charm.clj"
+         :git/sha "38e6823dc85ec932eefe2ad9c1f204307674c24f"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :main-opts ["-m" "run-tests"]}
+           :bench {:extra-paths ["dev/bench"]}}}

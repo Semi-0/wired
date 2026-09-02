@@ -12,7 +12,7 @@
             [propagators.infra.propagator :as prop]))
 
 (def fixture-path
-  "modules/tui/test/propagators/tui/integration/fixtures/four_edits.json")
+  "test/propagators/tui/integration/fixtures/four_edits.json")
 
 (defn fixture-manifest
   []

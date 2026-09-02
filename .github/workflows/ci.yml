@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: 1.12.4.1618
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: clojure -M:test
+      - run: node --test test/propagators/tui/graph/xr_static_update_test.mjs

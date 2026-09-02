@@ -140,14 +140,14 @@ export const createGraphView = ({ group }) => {
   };
 
   const prune = (model) => {
-    const nodeIds = new Set(model.propagators.tui.graph.nodes.map((node) => node.id));
+    const nodeIds = new Set(model.graph.nodes.map((node) => node.id));
     for (const [id, mesh] of nodeMeshes) {
       if (!nodeIds.has(id)) {
         group.remove(mesh);
         nodeMeshes.delete(id);
       }
     }
-    const edgeIds = new Set(model.propagators.tui.graph.edges.map((edge) => `${edge.from}->${edge.to}`));
+    const edgeIds = new Set(model.graph.edges.map((edge) => `${edge.from}->${edge.to}`));
     for (const [id, edgeGroup] of edgeMeshes) {
       if (!edgeIds.has(id)) {
         group.remove(edgeGroup);
@@ -158,7 +158,7 @@ export const createGraphView = ({ group }) => {
 
   const renderGraph = (model) => {
     prune(model);
-    for (const node of model.propagators.tui.graph.nodes) {
+    for (const node of model.graph.nodes) {
       const mesh = ensureNode(node);
       const p = model.layout[node.id] || { x: 0, y: 0, z: 0 };
       mesh.position.set(p.x, p.y, p.z);
@@ -190,7 +190,7 @@ export const createGraphView = ({ group }) => {
       });
     }
 
-    for (const edge of model.propagators.tui.graph.edges) {
+    for (const edge of model.graph.edges) {
       const from = model.layout[edge.from];
       const to = model.layout[edge.to];
       if (!from || !to) continue;

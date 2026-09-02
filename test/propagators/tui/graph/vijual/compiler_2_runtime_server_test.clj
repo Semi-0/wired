@@ -3,6 +3,7 @@
             [charm.components.viewport :as viewport]
             [charm.message :as charm-msg]
             [charm.style.core :as style]
+            [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
@@ -108,7 +109,7 @@
     (is (empty? (:edges trace)))))
 
 (deftest runtime-rebuild-has-no-source-special-forms
-  (let [runtime-source (slurp "modules/runtime/src/propagators/runtime.clj")]
+  (let [runtime-source (slurp (io/resource "propagators/runtime.clj"))]
     (is (not (str/includes? runtime-source "runtime-sync-form?")))
     (is (not (str/includes? runtime-source "runtime-trace-form?")))
     (is (not (str/includes? runtime-source "rebuild-sync-form")))

@@ -11,7 +11,7 @@
 
 (def fixture-module
   (.getCanonicalPath
-   (io/file "modules/tui/test/propagators/tui/integration/fixtures/project_math.clj")))
+   (io/file "test/propagators/tui/integration/fixtures/project_math.clj")))
 
 (def fixture-entry
   :propagators.runtime.fixtures.project-math/primitive-bindings)

@@ -128,7 +128,7 @@
         path (if (or (= path "/") (= path "/xr")) "/index.html" path)
         path (str/replace-first path #"^/" "")]
     (when-not (str/includes? path "..")
-      (str "modules/tui/src/propagators/tui/graph/xr_static/" path))))
+      (str "src/propagators/tui/graph/xr_static/" path))))
 
 (defn- static-bytes
   [path]

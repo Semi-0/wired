@@ -13,7 +13,7 @@ export const initialModel = () => ({
 export const nodeLabel = (node) => node.label || node.id;
 
 export const selectedNode = (model) =>
-  model.propagators.tui.graph.nodes.find((node) => node.id === model.selectedId) || null;
+  model.graph.nodes.find((node) => node.id === model.selectedId) || null;
 
 const normalizeWidget = (widget, nodeId = null) => {
   const channels = Array.isArray(widget.channels)
@@ -29,11 +29,11 @@ const normalizeWidget = (widget, nodeId = null) => {
 
 export const widgetsFromGraph = (graph) =>
   Object.fromEntries([
-    ...(propagators.tui.graph.widgets || [])
+    ...(graph.widgets || [])
       .map((widget) => normalizeWidget(widget))
       .filter((widget) => widget.widgetId)
       .map((widget) => [widget.widgetId, widget]),
-    ...(propagators.tui.graph.nodes || [])
+    ...(graph.nodes || [])
       .filter((node) =>
         (node.kind === "widget" || node.ui?.kind === "widget") &&
         (node.ui?.widgetId || node.ui?.["widget-id"] || node.ui?.id)
@@ -49,7 +49,7 @@ export const graphWithWidgets = (graph, widgets) => {
       .filter((widget) => widget.nodeId)
       .map((widget) => [widget.nodeId, widget])
   );
-  const nodes = (propagators.tui.graph.nodes || []).map((node) =>
+  const nodes = (graph.nodes || []).map((node) =>
     widgetsByNodeId[node.id]
       ? { ...node, ui: widgetsByNodeId[node.id] }
       : node
@@ -71,7 +71,7 @@ export const graphWithWidgets = (graph, widgets) => {
 
 export const reconcileLayout = (layout, graph) => {
   const next = {};
-  for (const node of propagators.tui.graph.nodes) {
+  for (const node of graph.nodes) {
     next[node.id] =
       layout[node.id] ||
       {
@@ -94,12 +94,12 @@ export const stepPulses = (pulses, dt) =>
   );
 
 export const stepForceLayout = (model, dt) => {
-  const ids = model.propagators.tui.graph.nodes.map((node) => node.id);
+  const ids = model.graph.nodes.map((node) => node.id);
   const layout = Object.fromEntries(
     Object.entries(model.layout).map(([id, p]) => [id, { ...p }])
   );
-  const byId = Object.fromEntries(model.propagators.tui.graph.nodes.map((node) => [node.id, node]));
-  const edgeSet = model.propagators.tui.graph.edges.filter((edge) => byId[edge.from] && byId[edge.to]);
+  const byId = Object.fromEntries(model.graph.nodes.map((node) => [node.id, node]));
+  const edgeSet = model.graph.edges.filter((edge) => byId[edge.from] && byId[edge.to]);
   const step = Math.min(dt, 0.032);
 
   for (let i = 0; i < ids.length; i += 1) {

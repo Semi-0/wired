@@ -10,7 +10,7 @@ const requireBabylon = () => {
 };
 
 const graphKey = (model) =>
-  `${model.propagators.tui.graph.nodes.map((node) => node.id).sort().join("|")}::${model.propagators.tui.graph.edges.length}`;
+  `${model.graph.nodes.map((node) => node.id).sort().join("|")}::${model.graph.edges.length}`;
 
 export const createRenderer = ({ root, selectionEl, dispatch }) => {
   const BABYLON = requireBabylon();
@@ -49,8 +49,8 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
 
   const frameGraph = (model) => {
     const key = graphKey(model);
-    if (input.interaction.userAdjusted || framedGraphKey === key || model.propagators.tui.graph.nodes.length === 0) return;
-    const points = model.propagators.tui.graph.nodes
+    if (input.interaction.userAdjusted || framedGraphKey === key || model.graph.nodes.length === 0) return;
+    const points = model.graph.nodes
       .map((node) => model.layout[node.id])
       .filter(Boolean)
       .map((p) => new BABYLON.Vector3(p.x, p.y, p.z));
@@ -118,4 +118,3 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     },
   };
 };
-

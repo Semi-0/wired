@@ -11,7 +11,7 @@
             [propagators.infra.message :refer [message]]
             [propagators.infra.network :as net]))
 
-(def default-model-file "modules/tui/dev/examples/lain/multi-client-messaging.lain")
+(def default-model-file "dev/examples/lain/multi-client-messaging.lain")
 
 (defn new-system []
   (atom {:coordinator (assembly/new-session)

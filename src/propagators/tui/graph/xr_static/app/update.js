@@ -83,7 +83,7 @@ export const mergeWidgets = (existing, incoming) => {
 
 const graphWithWidgetValue = (graph, widgetId, channelName, value, epoch) => ({
   ...graph,
-  nodes: (propagators.tui.graph.nodes || []).map((node) => {
+  nodes: (graph.nodes || []).map((node) => {
     const id = widgetIdOfNode(node);
     if (id !== widgetId) return node;
     return {
@@ -107,10 +107,10 @@ const nodeFingerprint = (node) =>
 
 const cellPulses = (model, graph) => {
   const previous = Object.fromEntries(
-    model.propagators.tui.graph.nodes.map((node) => [node.id, nodeFingerprint(node)])
+    model.graph.nodes.map((node) => [node.id, nodeFingerprint(node)])
   );
   return Object.fromEntries(
-    propagators.tui.graph.nodes
+    graph.nodes
       .filter((node) => node.kind === "cell")
       .filter((node) => previous[node.id] !== nodeFingerprint(node))
       .map((node) => [node.id, 0.9])
@@ -131,7 +131,7 @@ const nearestNode = (model, point) => {
   if (!point) return null;
   let best = null;
   let bestD2 = Infinity;
-  for (const node of model.propagators.tui.graph.nodes) {
+  for (const node of model.graph.nodes) {
     const p = model.layout[node.id];
     if (!p) continue;
     const dx = p.x - point.x;
@@ -232,7 +232,7 @@ export const update = (model, msg) => {
 
     case "xr/pinch": {
       const id = nearestNode(model, msg.point);
-      const node = model.propagators.tui.graph.nodes.find((node) => node.id === id);
+      const node = model.graph.nodes.find((node) => node.id === id);
       const ui = node?.ui;
       if (ui?.kind === "widget") {
         const id = widgetId(ui);

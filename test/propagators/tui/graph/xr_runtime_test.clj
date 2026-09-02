@@ -23,7 +23,9 @@
 
 (defn- cell-id
   [session label]
-  (cenv/binding-id (cenv/lookup (:program/env @session) (symbol label))))
+  (cenv/resolve-binding-id (:program/net @session)
+                           (:program/env @session)
+                           (symbol label)))
 
 (def behavior-declaration-forms
   ["(def-cells a-events a b-events b c-events c)"

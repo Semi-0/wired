@@ -9,8 +9,8 @@
             [propagators.infra.datastructures.event :as event]
             [propagators.infra.network :as net]))
 
-(def slider-file "modules/tui/dev/examples/lain/slider-panel.lain")
-(def demo-file "modules/tui/dev/examples/lain/demo.lain")
+(def slider-file "dev/examples/lain/slider-panel.lain")
+(def demo-file "dev/examples/lain/demo.lain")
 (def demo-print-command "(print-lines info 0)")
 (def demo-expected-text
   "knights-of-the-situation-calculus:\nhttps://discord.gg/aPRZfafAns")

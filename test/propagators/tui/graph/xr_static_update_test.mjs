@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { initialModel } from "../../graph/xr_static/app/model.js";
-import { update } from "../../graph/xr_static/app/update.js";
+import { initialModel } from "../../../../src/propagators/tui/graph/xr_static/app/model.js";
+import { update } from "../../../../src/propagators/tui/graph/xr_static/app/update.js";
 
 const widgetId = "slider-panel-0";
 const nodeId = `widget:${widgetId}`;
@@ -45,7 +45,7 @@ const dispatch = (model, msg) => update(model, msg)[0];
 const widgetChannel = (model) => model.widgets[widgetId].channels[0];
 
 const graphWidgetChannel = (model) =>
-  model.propagators.tui.graph.nodes.find((node) => node.id === nodeId).ui.channels[0];
+  model.graph.nodes.find((node) => node.id === nodeId).ui.channels[0];
 
 const assertWidgetState = (model, current, epoch) => {
   assert.deepEqual(widgetChannel(model), channel(current, epoch));

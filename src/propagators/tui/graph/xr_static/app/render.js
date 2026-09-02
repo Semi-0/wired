@@ -118,14 +118,14 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
   });
 
   const graphKey = (model) =>
-    `${model.propagators.tui.graph.nodes.map((node) => node.id).sort().join("|")}::${model.propagators.tui.graph.edges.length}`;
+    `${model.graph.nodes.map((node) => node.id).sort().join("|")}::${model.graph.edges.length}`;
 
   const frameGraph = (model) => {
     const key = graphKey(model);
-    if (interaction.userAdjusted || interaction.framedGraphKey === key || model.propagators.tui.graph.nodes.length === 0) {
+    if (interaction.userAdjusted || interaction.framedGraphKey === key || model.graph.nodes.length === 0) {
       return;
     }
-    const points = model.propagators.tui.graph.nodes
+    const points = model.graph.nodes
       .map((node) => model.layout[node.id])
       .filter(Boolean);
     if (points.length === 0) return;
