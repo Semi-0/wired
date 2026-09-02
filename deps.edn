@@ -1,13 +1,13 @@
 {:paths ["src"]
- :deps {io.github.Semi-0/propagators-infra
-        {:git/url "https://github.com/Semi-0/propagators-infra.git"
+ :deps {io.github.Semi-0/lain-infrastructure
+        {:git/url "https://github.com/Semi-0/lain-infrastructure.git"
          :git/sha "4f541bd7b1c250be23ab422466333f885f696cc8"}
-        io.github.Semi-0/propagators-compiler
-        {:git/url "https://github.com/Semi-0/propagators-compiler.git"
-         :git/sha "265c2a4cfd2e44a24ec4ec8a4e9c7f11fc088296"}
-        io.github.Semi-0/propagators-runtime
-        {:git/url "https://github.com/Semi-0/propagators-runtime.git"
-         :git/sha "cefdb6d7b240ef2e337e202681a80e10c8e907b4"}
+        io.github.Semi-0/lain-compiler
+        {:git/url "https://github.com/Semi-0/lain-compiler.git"
+         :git/sha "cf6301167e900e40c5a9137c8264bb874a6d7049"}
+        io.github.Semi-0/lain-runtime-clojure
+        {:git/url "https://github.com/Semi-0/lain-runtime-clojure.git"
+         :git/sha "24aaa32a5376ffb85ce1132e7731bc7556c5a954"}
         io.github.TimoKramer/charm.clj
         {:git/url "https://github.com/TimoKramer/charm.clj"
          :git/sha "38e6823dc85ec932eefe2ad9c1f204307674c24f"}}
