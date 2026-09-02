@@ -25,7 +25,9 @@
 
 (defn- cell-content
   [session symbol]
-  (let [cell-id (cenv/binding-id (cenv/lookup (:program/env @session) symbol))]
+  (let [cell-id (cenv/resolve-binding-id (:program/net @session)
+                                         (:program/env @session)
+                                         symbol)]
     (net/network-cell-content (:program/net @session) cell-id)))
 
 (deftest lain-file-loads-pure-server-instance-and-slider-events-update-output
