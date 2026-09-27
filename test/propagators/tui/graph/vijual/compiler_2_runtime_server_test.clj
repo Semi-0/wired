@@ -1,14 +1,13 @@
 (ns propagators.tui.graph.vijual.compiler-2-runtime-server-test
-  (:require [charm.components.text-input :as text-input]
+  (:require [propagators.tui.assembly :as assembly]
+            [charm.components.text-input :as text-input]
             [charm.components.viewport :as viewport]
             [charm.message :as charm-msg]
             [charm.style.core :as style]
-            [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [propagators.runtime :as runtime]
-            [propagators.tui.assembly :as assembly]
             [propagators.tui.graph.compiler-2-runtime-dashboard :as dashboard]
             [propagators.tui.graph.compiler-2-temperature-plot :as temperature-plot]
             [propagators.runtime.inspection.annotations :as tui-annotations]
@@ -78,7 +77,7 @@
         [tasks n3] (core/eval-cells [(message graph-id expanded-graph)
                                      (message epoch-id (semantic-trace/epoch 1))]
                                     n2)
-        n4 (core/run-tasks tasks n3)
+        n4 (nb/run-propagators n3 tasks)
         trace (net/network-cell-strongest n4 out-id)]
     (is (contains? (set (:edges trace)) [:a :b]))
     (is (contains? (set (:edges trace)) [:b :c]))
@@ -109,7 +108,7 @@
     (is (empty? (:edges trace)))))
 
 (deftest runtime-rebuild-has-no-source-special-forms
-  (let [runtime-source (slurp (io/resource "propagators/runtime.clj"))]
+  (let [runtime-source (slurp "propagators.infra/compiler_2/runtime.clj")]
     (is (not (str/includes? runtime-source "runtime-sync-form?")))
     (is (not (str/includes? runtime-source "runtime-trace-form?")))
     (is (not (str/includes? runtime-source "rebuild-sync-form")))
@@ -282,8 +281,9 @@
       :text "(behavior events retain-event (behavior-empty-state) out)"})
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> out (be:block 5))"})
-    (let [events-id (:binding/id (cenv/lookup (:program/env @session)
-                                              'events))]
+    (let [events-id (cenv/resolve-binding-id (:program/net @session)
+                                             (:program/env @session)
+                                             'events)]
       (runtime/commit-runtime-input! session
                                      {:runtime/input :cell-message
                                       :cell-id events-id

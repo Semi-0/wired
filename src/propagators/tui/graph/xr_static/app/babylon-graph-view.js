@@ -50,6 +50,12 @@ const pulseHalo = (BABYLON, scene, name) => {
 const nodeKind = (node) =>
   isWidget(node) ? "widget" : isPropagator(node) ? "propagator" : "cell";
 
+export const displayPosition = (viewMode, point) => ({
+  x: point.x,
+  y: point.y,
+  z: viewMode === "2d" ? 0 : point.z,
+});
+
 export const createBabylonGraphView = ({ BABYLON, scene }) => {
   const nodeMeshes = new Map();
   const edgeMeshes = new Map();
@@ -151,7 +157,8 @@ export const createBabylonGraphView = ({ BABYLON, scene }) => {
     for (const node of model.graph.nodes) {
       const mesh = ensureNode(node);
       const p = model.layout[node.id] || { x: 0, y: 0, z: 0 };
-      mesh.position.set(p.x, p.y, p.z);
+      const displayed = displayPosition(model.viewMode, p);
+      mesh.position.set(displayed.x, displayed.y, displayed.z);
       const selected = node.id === model.selectedId;
       const pulse = Math.min(1, Math.max(0, (model.pulses?.[node.id] || 0) / 0.9));
       const bloom = pulse * pulse;
@@ -174,8 +181,10 @@ export const createBabylonGraphView = ({ BABYLON, scene }) => {
       const from = model.layout[edge.from];
       const to = model.layout[edge.to];
       if (!from || !to) continue;
-      const start = new BABYLON.Vector3(from.x, from.y, from.z);
-      const end = new BABYLON.Vector3(to.x, to.y, to.z);
+      const displayedFrom = displayPosition(model.viewMode, from);
+      const displayedTo = displayPosition(model.viewMode, to);
+      const start = new BABYLON.Vector3(displayedFrom.x, displayedFrom.y, displayedFrom.z);
+      const end = new BABYLON.Vector3(displayedTo.x, displayedTo.y, displayedTo.z);
       const direction = end.subtract(start);
       if (direction.length() < 0.001) continue;
       const tip = end.subtract(direction.normalize().scale(0.18));

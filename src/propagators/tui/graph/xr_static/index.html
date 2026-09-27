@@ -2,25 +2,28 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Compiler-2 XR Graph</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main id="app">
       <section id="viewport"></section>
-      <aside id="panel">
+      <button id="panel-toggle" type="button" aria-controls="panel" aria-expanded="false">Views</button>
+      <aside id="panel" aria-label="Graph controls">
         <h1>XR Graph</h1>
         <div id="status">disconnected</div>
+        <div id="collections" aria-label="Published collection views"></div>
+        <div class="segmented" role="group" aria-label="View mode">
+          <button id="view-2d" aria-pressed="false">2D View</button>
+          <button id="view-3d" class="active" aria-pressed="true">3D View</button>
+          <button id="view-xr" aria-pressed="false">XR View</button>
+        </div>
         <label>
           Trace label
           <input id="trace-label" value="out" />
         </label>
         <button id="install-trace">Install trace</button>
-        <div class="segmented" aria-label="view mode">
-          <button id="view-3d" class="active">3D View</button>
-          <button id="view-xr">XR View</button>
-        </div>
         <label>
           Extend graph
           <textarea id="source" spellcheck="false">(def out)

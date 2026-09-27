@@ -2,6 +2,7 @@ export const initialModel = () => ({
   connected: false,
   status: "disconnected",
   graph: { nodes: [], edges: [] },
+  views: [],
   widgets: {},
   layout: {},
   pulses: {},
@@ -69,7 +70,7 @@ export const graphWithWidgets = (graph, widgets) => {
   return { ...graph, nodes };
 };
 
-export const reconcileLayout = (layout, graph) => {
+export const reconcileLayout = (layout, graph, viewMode = "3d") => {
   const next = {};
   for (const node of graph.nodes) {
     next[node.id] =
@@ -77,7 +78,7 @@ export const reconcileLayout = (layout, graph) => {
       {
         x: (Math.random() - 0.5) * 6,
         y: (Math.random() - 0.5) * 4,
-        z: (Math.random() - 0.5) * 6,
+        z: viewMode === "2d" ? 0 : (Math.random() - 0.5) * 6,
         vx: 0,
         vy: 0,
         vz: 0,
@@ -85,6 +86,26 @@ export const reconcileLayout = (layout, graph) => {
   }
   return next;
 };
+
+const stableDepth = (id) => {
+  let hash = 2166136261;
+  for (const character of String(id)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const normalized = ((hash >>> 0) % 2001) / 1000 - 1;
+  return normalized === 0 ? 0.35 : normalized * 3;
+};
+
+export const liftLayoutInto3d = (layout) =>
+  Object.fromEntries(
+    Object.entries(layout).map(([id, point]) => [
+      id,
+      Math.abs(point.z || 0) < 0.001
+        ? { ...point, z: stableDepth(id), vz: 0 }
+        : { ...point },
+    ])
+  );
 
 export const stepPulses = (pulses, dt) =>
   Object.fromEntries(
@@ -101,6 +122,7 @@ export const stepForceLayout = (model, dt) => {
   const byId = Object.fromEntries(model.graph.nodes.map((node) => [node.id, node]));
   const edgeSet = model.graph.edges.filter((edge) => byId[edge.from] && byId[edge.to]);
   const step = Math.min(dt, 0.032);
+  const planar = model.viewMode === "2d";
 
   for (let i = 0; i < ids.length; i += 1) {
     const a = layout[ids[i]];
@@ -108,7 +130,7 @@ export const stepForceLayout = (model, dt) => {
       const b = layout[ids[j]];
       const dx = a.x - b.x;
       const dy = a.y - b.y;
-      const dz = a.z - b.z;
+      const dz = planar ? 0 : a.z - b.z;
       const d2 = Math.max(dx * dx + dy * dy + dz * dz, 0.04);
       const f = 1.8 / d2;
       const d = Math.sqrt(d2);
@@ -117,10 +139,10 @@ export const stepForceLayout = (model, dt) => {
       const fz = (dz / d) * f;
       a.vx += fx * step;
       a.vy += fy * step;
-      a.vz += fz * step;
+      a.vz += planar ? 0 : fz * step;
       b.vx -= fx * step;
       b.vy -= fy * step;
-      b.vz -= fz * step;
+      b.vz -= planar ? 0 : fz * step;
     }
   }
 
@@ -129,7 +151,7 @@ export const stepForceLayout = (model, dt) => {
     const b = layout[edge.to];
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const dz = b.z - a.z;
+    const dz = planar ? 0 : b.z - a.z;
     const d = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 0.001);
     const f = (d - 1.8) * 0.8;
     const fx = (dx / d) * f;
@@ -137,20 +159,20 @@ export const stepForceLayout = (model, dt) => {
     const fz = (dz / d) * f;
     a.vx += fx * step;
     a.vy += fy * step;
-    a.vz += fz * step;
+    a.vz += planar ? 0 : fz * step;
     b.vx -= fx * step;
     b.vy -= fy * step;
-    b.vz -= fz * step;
+    b.vz -= planar ? 0 : fz * step;
   }
 
   for (const id of ids) {
     const p = layout[id];
     p.vx = (p.vx - p.x * 0.08 * step) * 0.92;
     p.vy = (p.vy - p.y * 0.08 * step) * 0.92;
-    p.vz = (p.vz - p.z * 0.08 * step) * 0.92;
+    p.vz = planar ? 0 : (p.vz - p.z * 0.08 * step) * 0.92;
     p.x += p.vx;
     p.y += p.vy;
-    p.z += p.vz;
+    p.z = planar ? 0 : p.z + p.vz;
   }
 
   return { ...model, layout, pulses: stepPulses(model.pulses, step) };

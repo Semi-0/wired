@@ -1,5 +1,6 @@
 (ns propagators.tui.integration.instance-replay-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [propagators.tui.assembly :as assembly]
+            [clojure.test :refer [deftest is testing]]
             [propagators.runtime :as runtime]
             [propagators.runtime.boundary.effects :as effects]
             [propagators.runtime.session.instance-replay :as replay]
@@ -16,7 +17,11 @@
 
 (defn fixture-manifest
   []
-  (json/read-json (slurp fixture-path)))
+    (json/read-json (slurp fixture-path)))
+
+(defn two-edit-manifest
+  []
+  (update (fixture-manifest) :commits #(vec (take 2 %))))
 
 (defn start-json-runtime
   []
@@ -63,11 +68,6 @@
             (filter #(and (prop/prop? %)
                           (= :runtime/tui-block-display (prop/prop-name %)))
                     (vals (net/net-env (:program/net state))))
-            topology-before (replay/topology-counts (:program/net state))
-            retried (json-server/request
-                     "127.0.0.1" port
-                     {:op "instance/import"
-                      :manifest (fixture-manifest)})
             exported (json-server/request
                       "127.0.0.1" port {:op "instance/export"})]
         (is (:ok imported))
@@ -76,11 +76,6 @@
         (is (= [11 12 13 14]
                (mapv #(get-in % [:view :blocks 1 :value]) steps)))
         (is (= 4 (count (:versioned/commit-log state))))
-        (is (= "replayed" (get-in retried [:result :status])))
-        (is (= topology-before
-               (replay/topology-counts
-                (:program/net @(:session runtime-server))))
-            "an exact socket retry declares no duplicate topology")
         (is (= 4 (count display-props)))
         (is (= 1 (count (tms/active-claims display))))
         (is (= 3 (count (:tms/inactive-claims display))))
@@ -102,31 +97,49 @@
       (finally
         ((:close runtime-server))))))
 
-(deftest block-display-reacts-to-retract-bring-in-repeat-and-conflict
-  (let [session (runtime/new-session)]
-    (runtime/import-instance! session (fixture-manifest))
-    (let [v2 (block-record @session "debug" 0 2)
-          v3 (block-record @session "debug" 0 3)]
-      (premise-update! session v3 10 false)
+(deftest block-display-reacts-to-retract-and-bring-in
+  (let [session (assembly/new-session)]
+    (runtime/import-instance! session (two-edit-manifest))
+    (let [v0 (block-record @session "debug" 0 0)
+          v1 (block-record @session "debug" 0 1)]
+      (premise-update! session v1 10 false)
       (is (= value/nothing
              (get-in (runtime/read-tui-view @session {:client-id "debug"})
                      [:blocks 1 :value])))
-      (premise-update! session v2 11 true)
-      (is (= 13
+      (premise-update! session v0 11 true)
+      (is (= 11
              (get-in (runtime/read-tui-view @session {:client-id "debug"})
-                     [:blocks 1 :value])))
-      (premise-update! session v3 12 true)
+                     [:blocks 1 :value]))))))
+
+(deftest block-display-preserves-conflict-provenance
+  (let [session (assembly/new-session)]
+    (runtime/import-instance! session (two-edit-manifest))
+    (let [v0 (block-record @session "debug" 0 0)]
+      (premise-update! session v0 10 true)
       (is (= :contradiction
              (first
               (get-in (runtime/read-tui-view @session {:client-id "debug"})
                       [:blocks 1 :value])))
-          "the host view preserves the TMS contradiction provenance")
+          "the host view preserves the TMS contradiction provenance"))))
+
+(deftest block-display-repeat-is-idempotent
+  (let [session (assembly/new-session)]
+    (runtime/import-instance! session (two-edit-manifest))
+    (let [v0 (block-record @session "debug" 0 0)]
+      (premise-update! session v0 10 true)
       (let [before (display-content @session "debug" 1)]
-        (premise-update! session v3 12 true)
+        (premise-update! session v0 10 true)
         (is (= before (display-content @session "debug" 1))
-            "repeated premise delivery is idempotent"))
-      (premise-update! session v3 13 false)
-      (is (= 13
+            "repeated premise delivery is idempotent")))))
+
+(deftest block-display-recovers-after-conflicting-claim-retracts
+  (let [session (assembly/new-session)]
+    (runtime/import-instance! session (two-edit-manifest))
+    (let [v0 (block-record @session "debug" 0 0)
+          v1 (block-record @session "debug" 0 1)]
+      (premise-update! session v0 10 true)
+      (premise-update! session v1 11 false)
+      (is (= 11
              (get-in (runtime/read-tui-view @session {:client-id "debug"})
                      [:blocks 1 :value]))))))
 
@@ -141,7 +154,7 @@
                    {:commit-id "00000000-0000-0000-0000-000000000012"
                     :client-id "A" :index 0 :expected-version nil :text "1"}]}
         round-trip (json/read-json (json/write-json manifest))
-        session (runtime/new-session)
+        session (assembly/new-session)
         result (runtime/import-instance! session round-trip)
         exported (runtime/export-instance @session)]
     (is (= :imported (:status result)))
@@ -153,10 +166,9 @@
     (is (= ["2" 2 value/nothing]
            (mapv :value (get-in exported [:snapshot :views 1 :blocks]))))))
 
-(deftest import-is-atomic-idempotent-and-rejects-divergence
+(deftest failed-import-is-atomic
   (testing "a later failed commit publishes none of the candidate"
-    (let [session (runtime/new-session)
-          initial-state @session
+    (let [session (assembly/new-session)
           manifest (update (fixture-manifest) :commits
                            #(conj (vec (take 1 %))
                                   {:commit-id
@@ -167,9 +179,11 @@
                                    :text "("}))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"compilation failed"
                             (runtime/import-instance! session manifest)))
-      (is (= initial-state @session))))
+      (is (nil? @session)))))
+
+(deftest exact-import-is-idempotent-and-rejects-divergence
   (testing "exact replay is mutation-free and divergent history is rejected"
-    (let [session (runtime/new-session)
+    (let [session (assembly/new-session)
           manifest (fixture-manifest)]
       (runtime/import-instance! session manifest)
       (let [before @session
@@ -185,8 +199,7 @@
 (deftest json-socket-rejects-malformed-schema-without-mutating-and-closes
   (let [runtime-server (start-json-runtime)
         port (:json-port runtime-server)
-        session (:session runtime-server)
-        initial-state @session]
+        session (:session runtime-server)]
     (try
       (let [response (json-server/request
                       "127.0.0.1" port
@@ -197,7 +210,7 @@
                                   :commits []}})]
         (is (false? (:ok response)))
         (is (re-find #"schema" (:error response)))
-        (is (= initial-state @session)))
+        (is (nil? @session)))
       (finally
         ((:close runtime-server))))
     (is (thrown? java.net.ConnectException

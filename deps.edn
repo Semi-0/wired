@@ -1,16 +1,20 @@
 {:paths ["src"]
- :deps {io.github.Semi-0/lain-infrastructure
+ :deps {clj-kondo/clj-kondo {:mvn/version "2026.08.04"}
+        io.github.Semi-0/lain-infrastructure
         {:git/url "https://github.com/Semi-0/lain-infrastructure.git"
-         :git/sha "4f541bd7b1c250be23ab422466333f885f696cc8"}
+         :git/sha "6b031cf71df7a27a71e52c14cf1227904f637a13"}
         io.github.Semi-0/lain-compiler
         {:git/url "https://github.com/Semi-0/lain-compiler.git"
-         :git/sha "cf6301167e900e40c5a9137c8264bb874a6d7049"}
+         :git/sha "3d49fb7f1abd0e108fc39c6828776c768c9ae31f"}
         io.github.Semi-0/lain-runtime-clojure
         {:git/url "https://github.com/Semi-0/lain-runtime-clojure.git"
-         :git/sha "24aaa32a5376ffb85ce1132e7731bc7556c5a954"}
+         :git/sha "f80981914a574a0bb971b3b9db78091e9356c0b4"}
         io.github.TimoKramer/charm.clj
         {:git/url "https://github.com/TimoKramer/charm.clj"
          :git/sha "38e6823dc85ec932eefe2ad9c1f204307674c24f"}}
  :aliases {:test {:extra-paths ["test"]
                   :main-opts ["-m" "run-tests"]}
-           :bench {:extra-paths ["dev/bench"]}}}
+           :bench {:extra-paths ["dev/bench"]}
+           :example/visualization {:main-opts ["-m" "examples.lain.visualization-combinators.demo"]}
+           :example/static-call-graph {:main-opts ["-m" "examples.lain.static-call-graph.main"]}
+           :xr {:main-opts ["-m" "propagators.tui.graph.xr-server"]}}}

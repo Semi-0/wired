@@ -13,17 +13,11 @@
             [propagators.infra.datastructures.behavior :as behavior]
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.datastructures.tms :as tms]
+            [propagators.runtime.experimental.visualization.interaction :as interaction]
             [propagators.infra.ids :as ids]
             [propagators.infra.network :as net]))
 
 (def default-xr-client-id "xr")
-
-(defonce installed-traces
-  (atom {}))
-
-(defn- session-trace-key
-  [session trace-id]
-  [session trace-id])
 
 (defn- node-id-string
   [x]
@@ -200,7 +194,7 @@
     old))
 
 (defn- canonicalize-graph
-  [{:keys [nodes node-aliases values node-ui expansions edges] :as graph}]
+  [{:keys [nodes node-kinds node-aliases values node-ui expansions edges] :as graph}]
   (let [groups (->> (vals node-aliases)
                     (map alias-node-set)
                     (filter #(<= 2 (count %))))
@@ -248,6 +242,7 @@
                               node-aliases)]
     (assoc graph
            :nodes nodes*
+           :node-kinds (into {} (map (fn [[id kind]] [(canonical id) kind])) node-kinds)
            :node-aliases node-aliases*
            :values values*
            :node-ui node-ui*
@@ -287,7 +282,9 @@
                             (let [ui (get node-ui id)]
                               (cond-> {:id (node-id-string id)
                                        :label (str label)
-                                       :kind (node-kind label ui)}
+                                       :kind (if-let [kind (get (:node-kinds graph) id)]
+                                               (name kind)
+                                               (node-kind label ui))}
                                 ui
                                 (assoc :ui ui)
 
@@ -312,6 +309,57 @@
       (seq changed-cell-ids)
       (assoc :changed-cell-ids (mapv id-string changed-cell-ids))))))
 
+(defn- history-sample->json
+  [sample]
+  (-> sample
+      (update :sample/content value-summary)
+      (update :sample/strongest value-summary)))
+
+(defn view->json
+  "Project a resolved visualizer declaration into browser-friendly data."
+  [view]
+  (let [base {:type (name (:view/type view))
+              :id (id-string (:view/id view))}]
+    (case (:view/type view)
+      :graph
+      (assoc base :graph (graph->json (:view/graph view)))
+
+      :collection
+      (let [collection (:view/collection view)]
+        (assoc base
+               :kind (name (:kind collection))
+               :epoch (:view/epoch view) :revision (:view/revision view)
+               :generation (:view/generation view)
+               :selectable (some? (:view/selection-cell view))
+               :items (mapv (fn [row]
+                              {:id (pr-str (:identity row))
+                               :label (:label row)
+                               :kind (some-> (:node-kind row) name)
+                               :value (value-summary (:payload row))}) (:items collection))
+               :edges (mapv (fn [[a b]] {:from (pr-str a) :to (pr-str b)}) (:edges collection))
+               :pending (count (filter #(= :pending (:membership %)) (:candidates collection)))))
+
+      :cell-window
+      (assoc base
+             :content (value-summary (:view/content view))
+             :strongest (value-summary (:view/strongest view)))
+
+      :cell-history
+      (assoc base
+             :samples (mapv history-sample->json (:view/samples view)))
+
+      :hierarchy
+      (assoc base
+             :roots (mapv node-id-string (:view/roots view))
+             :graph (graph->json (:view/graph view)))
+
+      :juxtapose
+      (assoc base
+             :layout {:axis (name (get-in view [:view/layout :axis]))}
+             :children (mapv view->json (:view/resolved-children view)))
+
+      (throw (ex-info "unknown resolved view type" {:view view})))))
+
 (defn- trace-request
   [{:keys [label node direction] :as command}]
   (let [direction (cond
@@ -329,7 +377,6 @@
   (let [trace-id (str (random-uuid))
         request (trace-request command)
         graph (runtime/semantic-trace @session request)]
-    (swap! installed-traces assoc (session-trace-key session trace-id) request)
     (swap! session #(-> %
                         (assoc-in [:xr/traces trace-id] request)
                         (assoc-in [:xr :traces trace-id] request)))
@@ -343,10 +390,7 @@
   (let [session? (instance? clojure.lang.IAtom state-or-session)
         state (if session? @state-or-session state-or-session)
         request (or (get-in state [:xr/traces trace-id])
-                    (get-in state [:xr :traces trace-id])
-                    (when session?
-                      (get @installed-traces
-                           (session-trace-key state-or-session trace-id))))]
+                    (get-in state [:xr :traces trace-id]))]
     (when-not request
       (throw (ex-info "xr trace not found" {:trace-id trace-id})))
     {:trace-id trace-id
@@ -438,6 +482,10 @@
     :xr/extend-graph (xr-extend-graph! session command)
     :xr/send-message (xr-send-message! session command)
     :xr/widget-event (xr-widget-event! session command)
+    :xr/view-select
+    (locking session
+      (runtime/commit-runtime-input! session (interaction/selection-input @session command))
+      {:status :selected})
     ;; Delegate existing runtime commands for convenience.
     (:result (runtime/handle-command! session command))))
 

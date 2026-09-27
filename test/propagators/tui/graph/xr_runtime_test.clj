@@ -1,9 +1,9 @@
 (ns propagators.tui.graph.xr-runtime-test
-  (:require [clojure.set :as set]
+  (:require [propagators.tui.assembly :as assembly]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [propagators.runtime :as runtime]
-            [propagators.tui.assembly :as assembly]
             [propagators.runtime.session.input :as runtime-input]
             [propagators.runtime.inspection.trace.subscriptions :as trace-subscriptions]
             [propagators.tui.graph.compiler-2-runtime-server :as runtime-server]
@@ -847,7 +847,7 @@
     (is (wait-until #(= 2 (:trace/published-results @session))))
     (let [subscription (first (vals (:trace/subscriptions @session)))
           result (get-in @session [:trace/results (:id subscription)])
-          graph (:graph result)
+          graph (behavior/base-value (behavior/strongest-value (:behavior result)))
           labels (frequencies (vals (:nodes graph)))]
       (is (pos? (get labels "out" 0)))
       (is (pos? (get labels "a" 0)))

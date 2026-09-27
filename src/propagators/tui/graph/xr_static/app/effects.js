@@ -27,6 +27,9 @@ export const bindControls = ({ installTrace, extendGraph, setViewMode }) =>
     document.getElementById("extend-graph").addEventListener("click", () => {
       dispatch(extendGraph(document.getElementById("source").value));
     });
+    document.getElementById("view-2d").addEventListener("click", () => {
+      dispatch(setViewMode("2d"));
+    });
     document.getElementById("view-3d").addEventListener("click", () => {
       dispatch(setViewMode("3d"));
     });

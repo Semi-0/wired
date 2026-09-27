@@ -1,0 +1,15 @@
+(def-cells source result references hierarchy-view value-view history-view dashboard)
+
+(<-> 1 source)
+
+(def-net increment [x] [out]
+  (-> (+ x 1) out))
+
+(increment source result)
+
+(propagator-references result :inputs references)
+(hierarchy references hierarchy-view)
+(cell-window result value-view)
+(cell-history result history-view)
+(juxtapose value-view hierarchy-view history-view dashboard)
+(xr:io dashboard)

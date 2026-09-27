@@ -8,9 +8,11 @@
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.datastructures.event :as event]
             [propagators.infra.datastructures.tms :as tms]
+            [propagators.infra.experimental.visualization.data :as collection-data]
             [propagators.infra.message :refer [message]]
             [propagators.infra.network :as net]
-            [propagators.infra.semantic-trace :as semantic-trace]))
+            [propagators.infra.semantic-trace :as semantic-trace]
+            [propagators.infra.visualizer :as visualizer]))
 
 (defn- effect-slot-key [effect-id]
   (runtime-ids/effect-slot-key effect-id))
@@ -28,55 +30,72 @@
   (or (:program/epoch (net/net-dict-or-empty network))
       0))
 
-(defn- trace-graph-value
-  [v]
+(defn- boundary-value
+  [accepted? v]
   (cond
     (value/unusable? v)
     nil
 
-    (semantic-trace/semantic-trace-graph? v)
+    (accepted? v)
     v
 
     (event/event-projection? v)
-    (let [graphs (->> (obj/public-slot-keys v)
-                      (keep #(trace-graph-value (obj/slot-value v %)))
+    (let [values (->> (obj/public-slot-keys v)
+                      (keep #(boundary-value accepted? (obj/slot-value v %)))
                       distinct
                       vec)]
-      (when (= 1 (count graphs))
-        (first graphs)))
+      (when (= 1 (count values))
+        (first values)))
 
     (or (event/event-content? v)
         (event/event-fact? v))
-    (trace-graph-value (event/strongest-value v))
+    (boundary-value accepted? (event/strongest-value v))
 
     (tms/distributed-value? v)
     (let [projected (tms/strongest-distributed-value v)]
       (when-not (value/unusable? projected)
-        (trace-graph-value (tms/distributed-base-value projected))))
+        (boundary-value accepted? (tms/distributed-base-value projected))))
 
     :else
     (let [base (or (behavior/base-value (behavior/strongest-value v))
                    (behavior/base-value v))]
       (when base
-        (trace-graph-value base)))))
+        (boundary-value accepted? base)))))
+
+(defn- trace-graph-value
+  [v]
+  (boundary-value semantic-trace/semantic-trace-graph? v))
+
+(defn- view-declaration-value
+  [v]
+  (boundary-value visualizer/view-declaration? v))
 
 (defn- xr-launch-messages
   [network outbox-id trace-id receipt-id]
-  (let [trace-graph (when trace-id
-                      (trace-graph-value
-                       (net/network-cell-strongest network trace-id)))
+  (let [source-value (when trace-id
+                       (net/network-cell-strongest network trace-id))
+        trace-graph (trace-graph-value source-value)
+        view (if (collection-data/collection? source-value)
+               (visualizer/collection-declaration trace-id trace-id)
+               (view-declaration-value source-value))
         epoch (program-epoch network)
-        effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]]
-    (if (or (value/unusable? trace-graph)
-            (not (semantic-trace/semantic-trace-graph? trace-graph)))
-      []
+        trace-effect-id [:xr/launch-trace trace-id receipt-id epoch (hash trace-graph)]
+        view-effect-id [:xr/present-view trace-id receipt-id epoch (hash view)]]
+    (cond
+      (semantic-trace/semantic-trace-graph? trace-graph)
       [(message outbox-id
                 (obj/compound-object
-                 {(effect-slot-key effect-id)
-                  (xr-effect-request effect-id
-                                     trace-graph
-                                     receipt-id
-                                     epoch)}))])))
+                 {(effect-slot-key trace-effect-id)
+                  (xr-effect-request trace-effect-id trace-graph receipt-id epoch)}))]
+
+      (visualizer/view-declaration? view)
+      [(message outbox-id
+                (obj/compound-object
+                 {(effect-slot-key view-effect-id)
+                  (boundary/xr-view-request view-effect-id view receipt-id epoch)}))]
+
+      :else
+      [])))
 
 (defn xr-io-operator [outbox-id]
   (operator-value/operator-closure
@@ -87,7 +106,7 @@
                 (let [[trace-id maybe-receipt-id] (vec arg-ids)
                       receipt-id (or maybe-receipt-id out-id)]
                   (when-not (and trace-id receipt-id (#{1 2} (count arg-ids)))
-                    (throw (ex-info "xr-io expects trace graph and optional receipt output"
+                    (throw (ex-info "xr-io expects a graph or view and optional receipt output"
                                     {:arg-ids arg-ids})))
                   (xr-launch-messages network outbox-id trace-id receipt-id)))}))
 

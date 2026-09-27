@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { initialModel } from "../../../../src/propagators/tui/graph/xr_static/app/model.js";
+import {
+  initialModel,
+  liftLayoutInto3d,
+  stepForceLayout,
+} from "../../../../src/propagators/tui/graph/xr_static/app/model.js";
+import { displayPosition } from "../../../../src/propagators/tui/graph/xr_static/app/babylon-graph-view.js";
 import { update } from "../../../../src/propagators/tui/graph/xr_static/app/update.js";
 
 const widgetId = "slider-panel-0";
@@ -130,4 +135,63 @@ test("rapid slider inputs coalesce to the latest runtime command", async () => {
       value: 40,
     },
   ]);
+});
+
+test("view mode transitions are explicit and preserve the graph payload", () => {
+  const graph = {
+    nodes: [{ id: "a", label: "A" }],
+    edges: [],
+  };
+  const original = {
+    ...initialModel(),
+    graph,
+    layout: { a: { x: 1, y: 2, z: 4, vx: 0, vy: 0, vz: 0 } },
+  };
+  const twoDimensional = dispatch(original, { type: "view/mode", mode: "2d" });
+  const threeDimensional = dispatch(twoDimensional, { type: "view/mode", mode: "3d" });
+  const unsupported = dispatch(threeDimensional, { type: "view/mode", mode: "paper" });
+
+  assert.equal(twoDimensional.viewMode, "2d");
+  assert.equal(twoDimensional.status, "2D view");
+  assert.equal(threeDimensional.viewMode, "3d");
+  assert.equal(unsupported.viewMode, "3d");
+  assert.equal(unsupported.status, "Unsupported view mode: paper");
+  assert.strictEqual(twoDimensional.graph, graph);
+  assert.strictEqual(threeDimensional.graph, graph);
+});
+
+test("2D force layout is planar and returning to 3D restores depth", () => {
+  const planar = stepForceLayout(
+    {
+      ...initialModel(),
+      viewMode: "2d",
+      graph: {
+        nodes: [{ id: "a" }, { id: "b" }],
+        edges: [{ from: "a", to: "b" }],
+      },
+      layout: {
+        a: { x: -1, y: 0, z: 4, vx: 0, vy: 0, vz: 2 },
+        b: { x: 1, y: 0, z: -4, vx: 0, vy: 0, vz: -2 },
+      },
+    },
+    0.016
+  );
+
+  assert.equal(planar.layout.a.z, 0);
+  assert.equal(planar.layout.b.z, 0);
+  assert.equal(planar.layout.a.vz, 0);
+  assert.equal(planar.layout.b.vz, 0);
+
+  const lifted = liftLayoutInto3d(planar.layout);
+  assert.notEqual(lifted.a.z, 0);
+  assert.notEqual(lifted.b.z, 0);
+  assert.notEqual(lifted.a.z, lifted.b.z);
+});
+
+test("renderer projection flattens only the 2D interpretation", () => {
+  const point = { x: 1, y: 2, z: 3 };
+
+  assert.deepEqual(displayPosition("2d", point), { x: 1, y: 2, z: 0 });
+  assert.deepEqual(displayPosition("3d", point), point);
+  assert.deepEqual(displayPosition("xr", point), point);
 });

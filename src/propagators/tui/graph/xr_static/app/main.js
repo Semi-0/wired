@@ -4,6 +4,8 @@ import { initialModel } from "./model.js";
 import { Msg } from "./msg.js";
 import { createRenderer } from "./babylon-render.js";
 import { update } from "./update.js";
+import { bindMobileControls } from "./mobile-controls.js";
+import { collectionControls } from "./collection-controls.js";
 
 const env = {
   model: initialModel(),
@@ -15,8 +17,19 @@ const statusEl = document.getElementById("status");
 const viewport = document.getElementById("viewport");
 const selectionEl = document.getElementById("selection");
 const widgetsEl = document.getElementById("widgets");
+const view2dEl = document.getElementById("view-2d");
 const view3dEl = document.getElementById("view-3d");
 const viewXrEl = document.getElementById("view-xr");
+const renderCollections = collectionControls(document.getElementById("collections"), (msg) => dispatch(msg));
+
+bindMobileControls({
+  toggle: document.getElementById("panel-toggle"),
+  panel: document.getElementById("panel"),
+  viewport,
+  modes: [view2dEl, view3dEl, viewXrEl],
+  media: window.matchMedia("(max-width: 780px)"),
+  document,
+});
 
 let rendererHandle = null;
 let widgetsShapeKey = "";
@@ -143,8 +156,13 @@ export const dispatch = (msg) => {
   env.model = next;
   statusEl.textContent = env.model.status;
   renderWidgets(env.model);
+  renderCollections(env.model);
+  view2dEl.classList.toggle("active", env.model.viewMode === "2d");
   view3dEl.classList.toggle("active", env.model.viewMode === "3d");
   viewXrEl.classList.toggle("active", env.model.viewMode === "xr");
+  view2dEl.setAttribute("aria-pressed", String(env.model.viewMode === "2d"));
+  view3dEl.setAttribute("aria-pressed", String(env.model.viewMode === "3d"));
+  viewXrEl.setAttribute("aria-pressed", String(env.model.viewMode === "xr"));
   runEffects(effects);
 };
 

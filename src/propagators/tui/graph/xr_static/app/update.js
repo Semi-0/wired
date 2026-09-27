@@ -1,12 +1,21 @@
 import { batch, coalescedRuntimeCommand, none, runtimeCommand } from "./combinators.js";
 import { enterXrEffect } from "./effects.js";
-import { graphWithWidgets, reconcileLayout, stepForceLayout, widgetsFromGraph } from "./model.js";
+import {
+  graphWithWidgets,
+  liftLayoutInto3d,
+  reconcileLayout,
+  stepForceLayout,
+  widgetsFromGraph,
+} from "./model.js";
 
 const graphFromPayload = (payload) => {
   if (payload?.result?.graph) return payload.result.graph;
   if (payload?.graph) return payload.graph;
   return null;
 };
+
+const viewsFromPayload = (payload) =>
+  payload?.result?.views || payload?.views || [];
 
 const widgetId = (ui) => ui?.widgetId || ui?.["widget-id"] || ui?.id;
 
@@ -163,6 +172,7 @@ export const update = (model, msg) => {
       }
       const graph = graphFromPayload(msg.payload);
       if (!graph) return [model, none()];
+      const views = viewsFromPayload(msg.payload);
       const incomingWidgets = widgetsFromGraph(graph);
       const widgets = mergeWidgets(model.widgets, incomingWidgets);
       const graphWithRegisteredWidgets = graphWithWidgets(graph, widgets);
@@ -172,10 +182,11 @@ export const update = (model, msg) => {
         {
           ...model,
           graph: graphWithRegisteredWidgets,
+          views,
           widgets,
-          layout: reconcileLayout(model.layout, graphWithRegisteredWidgets),
+          layout: reconcileLayout(model.layout, graphWithRegisteredWidgets, model.viewMode),
           pulses: { ...model.pulses, ...graphPulses(model, graphWithRegisteredWidgets) },
-          status: `graph ${nodeCount} nodes / ${edgeCount} edges`,
+          status: `graph ${nodeCount} nodes / ${edgeCount} edges · ${views.length} views`,
         },
         none(),
       ];
@@ -192,6 +203,15 @@ export const update = (model, msg) => {
         { ...model, status: "extending graph" },
         [runtimeCommand("xr/extend-graph", { source: msg.source })],
       ];
+
+    case "view/select":
+      return [model, [runtimeCommand("xr/view-select", {
+        "view-id": msg.view.id,
+        "item-id": msg.itemId,
+        epoch: msg.view.epoch,
+        revision: msg.view.revision,
+        generation: msg.view.generation,
+      })]];
 
     case "widget/input":
       {
@@ -216,13 +236,42 @@ export const update = (model, msg) => {
       }
 
     case "view/mode":
-      if (msg.mode === "xr") {
-        if (!model.xr.supported) {
-          return [{ ...model, viewMode: "3d", status: "WebXR hardware unavailable" }, none()];
-        }
-        return [{ ...model, viewMode: "xr", status: "entering XR" }, [enterXrEffect()]];
+      switch (msg.mode) {
+        case "2d":
+          return [{ ...model, viewMode: "2d", status: "2D view" }, none()];
+
+        case "3d":
+          return [
+            {
+              ...model,
+              viewMode: "3d",
+              layout: model.viewMode === "2d"
+                ? liftLayoutInto3d(model.layout)
+                : model.layout,
+              status: "3D view",
+            },
+            none(),
+          ];
+
+        case "xr":
+          if (!model.xr.supported) {
+            return [{ ...model, status: "WebXR hardware unavailable" }, none()];
+          }
+          return [
+            {
+              ...model,
+              viewMode: "xr",
+              layout: model.viewMode === "2d"
+                ? liftLayoutInto3d(model.layout)
+                : model.layout,
+              status: "entering XR",
+            },
+            [enterXrEffect()],
+          ];
+
+        default:
+          return [{ ...model, status: `Unsupported view mode: ${msg.mode}` }, none()];
       }
-      return [{ ...model, viewMode: "3d", status: "3D view" }, none()];
 
     case "tick":
       return [stepForceLayout(model, msg.dt), none()];
@@ -271,7 +320,17 @@ export const update = (model, msg) => {
       if (!model.xr.supported) {
         return [{ ...model, status: "WebXR hardware unavailable" }, none()];
       }
-      return [{ ...model, viewMode: "xr", status: "entering XR" }, [enterXrEffect()]];
+      return [
+        {
+          ...model,
+          viewMode: "xr",
+          layout: model.viewMode === "2d"
+            ? liftLayoutInto3d(model.layout)
+            : model.layout,
+          status: "entering XR",
+        },
+        [enterXrEffect()],
+      ];
 
     case "xr/entered":
       return [
@@ -281,7 +340,12 @@ export const update = (model, msg) => {
 
     case "xr/error":
       return [
-        { ...model, viewMode: "3d", status: `XR unavailable: ${msg.error || "unknown"}` },
+        {
+          ...model,
+          viewMode: "3d",
+          layout: liftLayoutInto3d(model.layout),
+          status: `XR unavailable: ${msg.error || "unknown"}`,
+        },
         none(),
       ];
 

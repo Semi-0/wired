@@ -9,10 +9,9 @@
             [propagators.runtime.session.version-history :as history]
             [propagators.tui.graph.compiler-2-semantic-repl :as semantic-repl]
             [propagators.compiler.main :as compiler]
-            [propagators.compiler.model.application-value :as application-value]
             [propagators.compiler.operators.versioned-definition :as definition]
-            [propagators.infra.core :as core]
-            [propagators.infra.datastructures.compound-object :as obj]
+            [propagators.compiler.lowering.application :as application]
+            [propagators.infra.debug :as debug]
             [propagators.infra.gur.flat :as fvm]
             [propagators.infra.network :as net]
             [propagators.infra.network-builder :as nb]
@@ -127,11 +126,11 @@
                              [:tuis client-id :blocks block-index
                               :version-history]))
         application-id (first (get-in record [:topology :application-ids]))
-        application (net/network-cell-strongest (:program/net runtime-state)
-                                                application-id)]
+        topology (application/application-topology
+                  (:program/net runtime-state)
+                  application-id)]
     {:input-id
-     (first (obj/slot-value application
-                            application-value/application-arg-cells-slot))
+     (first (:argument-ids topology))
      :output-id (get-in record [:topology :result-cell])}))
 
 (defn benchmark-definition-edits-existing-application-input
@@ -159,22 +158,23 @@
     (let [runtime-state @session
           {:keys [input-id output-id]}
           (current-application-io runtime-state client-id 1)
-          activations (atom {})
-          eval-propagator core/eval-propagator
+          profile (atom {})
           started (System/nanoTime)
           updated
-          (with-redefs
-            [core/eval-propagator
-             (fn [id tasks network]
-               (let [name (some-> (net/network-env-lookup network id)
-                                  prop/prop-name)]
-                 (swap! activations update name
-                        (fn [{:keys [calls ids] :or {calls 0 ids #{}}}]
-                          {:calls (inc calls) :ids (conj ids id)})))
-               (eval-propagator id tasks network))]
+          (debug/with-activation-profile
+            profile
             (input/apply-program-updates runtime-state
                                          [{:cell-id input-id :update 7}]))
           elapsed (/ (double (- (System/nanoTime) started)) 1000000.0)
+          activations
+          (reduce (fn [by-name [id {:keys [calls prop-name]}]]
+                    (update by-name prop-name
+                            (fn [{total :calls ids :ids
+                                  :or {total 0 ids #{}}}]
+                              {:calls (+ total calls)
+                               :ids (conj ids id)})))
+                  {}
+                  (:by-propagator @profile))
           result (net/network-cell-strongest (:program/net updated) output-id)
           result-value (if (= :distributed-projection (:tms/kind result))
                          (:tms/value result)
@@ -188,13 +188,13 @@
               :input-ms elapsed
               :input 7
               :result result-value
-              :activations (reduce + (map (comp :calls val) @activations))
+              :activations (reduce + (map (comp :calls val) activations))
               :activation-counts
               (into {} (map (fn [[name {:keys [calls]}]] [name calls]))
-                    @activations)
+                    activations)
               :distinct-activation-counts
               (into {} (map (fn [[name {:keys [ids]}]] [name (count ids)]))
-                    @activations)}
+                    activations)}
              (topology-counts updated)))))
 
 (defn- timed-commit! [session request]
@@ -277,26 +277,18 @@
   "Benchmark edit commits and group full activation cost by propagator name."
   [edits]
   (let [profile (atom {})
-        eval-propagator core/eval-propagator
-        timed-eval
-        (fn [current-id tasks network]
-          (let [name (some-> (net/network-env-lookup network current-id)
-                             prop/prop-name)
-                started (System/nanoTime)]
-            (try
-              (eval-propagator current-id tasks network)
-              (finally
-                (let [elapsed (/ (double (- (System/nanoTime) started))
-                                 1000000.0)]
-                  (swap! profile update name
-                         (fn [{:keys [calls ms max-ms]
-                               :or {calls 0 ms 0.0 max-ms 0.0}}]
-                           {:calls (inc calls)
-                            :ms (+ ms elapsed)
-                            :max-ms (max max-ms elapsed)})))))))]
-    (with-redefs [core/eval-propagator timed-eval]
-      (assoc (benchmark-definition-and-application-edits edits)
-             :activation-profile @profile))))
+        result (debug/with-activation-profile
+                 profile
+                 (benchmark-definition-and-application-edits edits))
+        rows (:by-name (debug/activation-profile-report profile))]
+    (assoc result
+           :activation-profile
+           (into {} (map (fn [{:keys [prop-name calls elapsed-ms
+                                      max-elapsed-ms]}]
+                           [prop-name {:calls calls
+                                       :ms elapsed-ms
+                                       :max-ms max-elapsed-ms}])
+                         rows)))))
 
 (defn -main [& _]
   (doseq [edits [1 10 50]]

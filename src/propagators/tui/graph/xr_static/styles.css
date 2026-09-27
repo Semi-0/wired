@@ -7,12 +7,14 @@ body,
 }
 
 body {
+  overflow: hidden;
   background: #000;
   color: #fff;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 #app {
+  height: 100dvh;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
 }
@@ -30,12 +32,35 @@ body {
 }
 
 #panel {
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
   border-left: 1px solid #333;
   background: #050505;
   padding: 16px;
+}
+
+#panel-toggle {
+  display: none;
+}
+
+button:focus-visible {
+  outline: 2px solid #90caff;
+  outline-offset: 3px;
+}
+
+#collections button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+#collections div {
+  overflow-wrap: anywhere;
 }
 
 h1 {
@@ -90,7 +115,7 @@ button:hover {
 
 .segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 0;
 }
 
@@ -105,6 +130,10 @@ button:hover {
 .segmented button:last-child {
   border-left: 0;
   border-radius: 0 6px 6px 0;
+}
+
+.segmented button + button {
+  border-left: 0;
 }
 
 .segmented button.active {
@@ -183,12 +212,52 @@ button:hover {
 
 @media (max-width: 780px) {
   #app {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) auto;
+    display: block;
+  }
+
+  #viewport {
+    width: 100%;
+    height: 100%;
+  }
+
+  #panel-toggle {
+    display: block;
+    position: fixed;
+    z-index: 3;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    min-width: 72px;
+    min-height: 44px;
+    border-radius: 24px;
+    background: #15191f;
+    box-shadow: 0 3px 18px #0008;
   }
 
   #panel {
-    border-left: 0;
-    border-top: 1px solid #2b333c;
+    display: none;
+    position: fixed;
+    z-index: 2;
+    top: calc(max(12px, env(safe-area-inset-top)) + 52px);
+    right: max(12px, env(safe-area-inset-right));
+    left: max(12px, env(safe-area-inset-left));
+    box-sizing: border-box;
+    max-height: calc(100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    border: 1px solid #39434f;
+    border-radius: 14px;
+    box-shadow: 0 8px 32px #0009;
+    overscroll-behavior: contain;
+  }
+
+  #panel.is-open {
+    display: flex;
+  }
+
+  #panel button {
+    min-height: 44px;
+  }
+
+  #panel input,
+  #panel textarea {
+    font-size: 16px;
   }
 }

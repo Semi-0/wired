@@ -15,13 +15,11 @@
 
 (def display-name support/display-name)
 (def ast-label support/ast-label)
-(def environment-labels support/environment-labels)
 (def topology-binding-labels support/topology-binding-labels)
 (def network-closure-values support/network-closure-values)
 (def closure-labels support/closure-labels)
 (def closure-key support/closure-key)
 (def unique-network-closure-values support/unique-network-closure-values)
-(def closure-env-labels support/closure-env-labels)
 (def generated-labels support/generated-labels)
 (def simple-cell-value? support/simple-cell-value?)
 (def literal-cell-labels support/literal-cell-labels)

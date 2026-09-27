@@ -1,9 +1,9 @@
 (ns propagators.tui.graph.compiler-2-versioned-tui.trace-render-test
-  (:require [clojure.string :as str]
+  (:require [propagators.tui.assembly :as assembly]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [propagators.tui.graph.compiler-2-versioned-tui :as tui]
             [propagators.runtime :as runtime]
-            [propagators.tui.assembly :as assembly]
             [propagators.infra.semantic-trace :as semantic-trace]))
 
 (defn- commit!

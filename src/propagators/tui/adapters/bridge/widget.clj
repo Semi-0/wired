@@ -1,6 +1,7 @@
 (ns propagators.tui.adapters.bridge.widget
   "Compiler-2 runtime widget IO operators for XR/browser projections."
-  (:require [propagators.runtime.ids :as runtime-ids]
+  (:require [propagators.compiler.common.cps :as cps]
+            [propagators.runtime.ids :as runtime-ids]
             [propagators.infra.cells.value :as value]
             [propagators.compiler.language.ast :as ast]
             [propagators.compiler.compiler.dispatch :as compiler-dispatch]
@@ -128,8 +129,10 @@
   [outbox-id]
   (operator-value/operator-closure
    {:name 'io:slider
-    :direct-installer
-    (fn [state operand-forms out-id]
+    :compiler-operands
+    (fn [_compile-k state operand-forms out-id k]
+      (let [[next-state binding]
+            (do
       (let [{:keys [widget-label cell-form]} (io-slider-plan operand-forms)
             [state' widget-binding] (add-literal-cell state
                                                       [:io-slider widget-label :id]
@@ -148,7 +151,8 @@
                                      (cenv/binding-id widget-binding)
                                      [{:widget/channel "value"
                                        :widget/view-cell cell-id
-                                       :widget/event-cell cell-id}])))}))
+                                       :widget/event-cell cell-id}])))]
+        (cps/continue k next-state binding)))}))
 
 (defn- require-slider-panel-cells
   [name cell-forms]
@@ -190,8 +194,10 @@
   [outbox-id named?]
   (operator-value/operator-closure
    {:name (if named? 'io:slider-panel-name 'io:slider-panel)
-    :direct-installer
-    (fn [state operand-forms out-id]
+    :compiler-operands
+    (fn [_compile-k state operand-forms out-id k]
+      (let [[next-state binding]
+            (do
       (let [{:keys [panel-label cell-forms]} (io-slider-panel-plan operand-forms
                                                                     named?)
             [state' widget-binding] (add-literal-cell state
@@ -225,7 +231,8 @@
                                      out-id
                                      :slider-panel
                                      (cenv/binding-id widget-binding)
-                                     channels)))}))
+                                     channels)))]
+        (cps/continue k next-state binding)))}))
 
 (defn io-slider-panel-operator
   [outbox-id]

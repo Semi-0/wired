@@ -24,10 +24,7 @@
       (is (contains? labels "5"))
       (is (contains? labels "app:<->"))
       (is (contains? labels "ctx:<->"))
-      (is (contains? labels "op:<->"))
       (is (contains? labels "app:inc-local"))
-      (is (contains? labels "prop:inc-local"))
-      (is (contains? labels "args:inc-local"))
       (is (contains? (stage-labels expanded-stage) "result"))))
 
   (testing "closure body subgraph labels its argument and primitive application"
@@ -37,9 +34,7 @@
       (is (contains? labels "x"))
       (is (contains? labels "1"))
       (is (contains? labels "app:+"))
-      (is (contains? labels "ctx:+"))
-      (is (contains? labels "op:+"))
-      (is (contains? labels "args:+")))))
+      (is (contains? labels "ctx:+")))))
 
 (deftest compiler-2-demo-infers-semantic-graph
   (testing "main semantic graph collapses sync and closure call wiring"

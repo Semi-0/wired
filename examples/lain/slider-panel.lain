@@ -1,0 +1,6 @@
+(def-cells a b c d)
+(-> (- (+ a c) b) d)
+(def-cell g)
+(trace d g)
+(io:xr g)
+(io:slider-panels a b c)

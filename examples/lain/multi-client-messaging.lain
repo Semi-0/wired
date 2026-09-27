@@ -1,0 +1,25 @@
+(def-cell clients)
+(def-cell routes)
+
+(runtime:clients clients)
+
+(def-net connect-to-all [from clients] [outs]
+  (let-cell [to rest routed rest-outs]
+    (p:car to clients)
+    (p:cdr rest clients)
+    (runtime:client-pipe from to "message" routed)
+    (p:cons routed rest-outs outs)
+    (when rest
+      (connect-to-all from rest rest-outs))))
+
+(def-net connect-clients [clients all-clients] [rows]
+  (let-cell [from rest outs row rest-rows]
+    (p:car from clients)
+    (p:cdr rest clients)
+    (connect-to-all from all-clients outs)
+    (p:cons from outs row)
+    (p:cons row rest-rows rows)
+    (when rest
+      (connect-clients rest all-clients rest-rows))))
+
+(connect-clients clients clients routes)

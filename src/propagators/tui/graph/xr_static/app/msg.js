@@ -1,4 +1,5 @@
 export const Msg = {
+  ViewSelect: (view, itemId) => ({ type: "view/select", view, itemId }),
   SocketOpen: () => ({ type: "socket/open" }),
   SocketClosed: () => ({ type: "socket/closed" }),
   SocketError: (error) => ({ type: "socket/error", error }),

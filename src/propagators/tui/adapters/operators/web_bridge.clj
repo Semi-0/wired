@@ -1,6 +1,7 @@
 (ns propagators.tui.adapters.operators.web-bridge
   "Compiler-2 primitive bridge operators for independent web clients."
-  (:require [propagators.runtime.session.state :as state]
+  (:require [propagators.compiler.common.cps :as cps]
+            [propagators.runtime.session.state :as state]
             [propagators.tui.adapters.bridge.web :as bridge]
             [propagators.infra.cells.value :as value]
             [propagators.compiler.compiler.dispatch :as compiler-dispatch]
@@ -77,8 +78,10 @@
 (defn runtime-clients-operator []
   (operator-value/operator-closure
    {:name 'runtime:clients
-    :direct-installer
-    (fn [state operand-forms out-id]
+    :compiler-operands
+    (fn [_compile-k state operand-forms out-id k]
+      (let [[next-state binding]
+            (do
       (let [[state' target-id] (one-arg-target state
                                                operand-forms
                                                out-id
@@ -88,7 +91,8 @@
                                   source-id
                                   target-id
                                   [:clients source-id target-id])
-         (cenv/cell-binding target-id)]))}))
+         (cenv/cell-binding target-id)]))]
+        (cps/continue k next-state binding)))}))
 
 (defn- compile-route-output
   [state operand-forms fallback-id]
@@ -105,8 +109,10 @@
 (defn runtime-client-pipe-operator []
   (operator-value/operator-closure
    {:name 'runtime:client-pipe
-    :direct-installer
-    (fn [state operand-forms out-id]
+    :compiler-operands
+    (fn [_compile-k state operand-forms out-id k]
+      (let [[next-state binding]
+            (do
       (let [forms (vec operand-forms)]
         (when-not (#{2 3 4} (count forms))
           (throw (ex-info "runtime:client-pipe expects from-client, to-client, optional pipe, and optional output"
@@ -133,4 +139,5 @@
                                   []
                                   (route-messages from to pipe target-id))))
                             [:client-pipe from-id to-id pipe-id target-id]))
-           (cenv/cell-binding target-id)])))}))
+           (cenv/cell-binding target-id)])))]
+        (cps/continue k next-state binding)))}))
