@@ -60,8 +60,9 @@ The broader suite also reported web-client routing failures and timed out in
 2-second per-test limit; an investigative run with 30 seconds also timed out.
 The harness was not changed. No completed full-suite pass is claimed.
 
-This branch is a review snapshot, not a compatible default release. Keep main
-on its working dependency pins until maintained behavior is restored. Do not
+This branch is a review snapshot, not a compatible default release. Keep the
+default branch, `codex/xr-regression-followup`, on its working dependency pins
+until maintained behavior is restored. Do not
 solve the regressions by changing compound bidirectional semantics, inserting
 domain branches in the runner, or restoring the retired compatibility runner.
 
