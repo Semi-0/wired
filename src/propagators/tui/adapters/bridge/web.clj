@@ -56,22 +56,3 @@
      {:car (client-handle client-id)
       :cdr (linked-list-value (rest client-ids))})
     value/nothing))
-
-(defn linked-list-values
-  ([xs] (linked-list-values xs 256))
-  ([xs max-depth]
-   (loop [current xs
-          values []
-          seen #{}
-          remaining (long max-depth)]
-    (if (value/unusable? current)
-      values
-      (let [identity-key (System/identityHashCode current)]
-        (if (or (zero? remaining) (contains? seen identity-key))
-          values
-          (let [head (obj/accessor-source-slot-value current :car)
-                tail (obj/accessor-source-slot-value current :cdr)]
-            (recur tail
-                   (conj values head)
-                   (conj seen identity-key)
-                   (dec remaining)))))))))

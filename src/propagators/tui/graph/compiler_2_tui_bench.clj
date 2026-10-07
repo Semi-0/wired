@@ -10,11 +10,11 @@
 
 (def simple-trace-commands
   [{:op :tui/register :client-id "A"}
-   {:op :tui/append-block :client-id "A" :text "(def a)"}
+   {:op :tui/append-block :client-id "A" :text "(define a)"}
    {:op :tui/append-block :client-id "A" :text "(<-> 2 a)"}
-   {:op :tui/append-block :client-id "A" :text "(def out)"}
+   {:op :tui/append-block :client-id "A" :text "(define out)"}
    {:op :tui/append-block :client-id "A" :text "(-> (+ 1 a) out)"}
-   {:op :tui/append-block :client-id "A" :text "(def g)"}
+   {:op :tui/append-block :client-id "A" :text "(define g)"}
    {:op :tui/append-block :client-id "A" :text "(trace out g)"}])
 
 (defn- elapsed-ms
@@ -129,7 +129,7 @@
 (defn- value-source
   [client-index value-index]
   (if (zero? value-index)
-    (format "(def %s 0)" (value-symbol client-index 0))
+    (format "(define %s 0)" (value-symbol client-index 0))
     (format "(-> (+ %d %s) %s)"
             value-index
             (value-symbol client-index (dec value-index))
@@ -172,8 +172,8 @@
   [op]
   [(format "(define-behaviors %s)"
            (str/join " " behavior-graph-channels))
-   "(def out)"
-   "(def g)"
+   "(define out)"
+   "(define g)"
    (format "(io:slider-panel %s)"
            (str/join " " behavior-graph-channels))
    (format "(-> %s out)" (behavior-graph-expr op))
@@ -209,11 +209,11 @@
 
 (defn- slider-cache-sources
   [full?]
-  (cond-> ["(def-cells a b c d)"
+  (cond-> ["(define a)\n(define b)\n(define c)\n(define d)"
            "(-> (- (+ a c) b) d)"
            "(io:slider-panels a b c)"]
     full?
-    (into ["(def-cell g)"
+    (into ["(define g)"
            "(trace d g)"
            "(io:xr g)"
            "(-> d (block 7))"])))
@@ -418,7 +418,7 @@
            #(do
               (doseq [i (range 5)]
                 (runtime-append! session
-                                 (format "(def %s)" (trace-cell-symbol i))))
+                                 (format "(define %s)" (trace-cell-symbol i))))
               (doseq [i (range 5)]
                 (let [before (trace-completions session)]
                   (runtime-append!
@@ -664,7 +664,7 @@
   []
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (runtime-append-source! session "(def x0)")
+    (runtime-append-source! session "(define x0)")
     (runtime-append-source! session "(<-> 0 x0)")
     (doseq [i (range 1 101)]
       (runtime-append-source! session
@@ -691,7 +691,7 @@
   []
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (runtime-append-source! session "(def x0)")
+    (runtime-append-source! session "(define x0)")
     (doseq [i (range 1 101)]
       (runtime-append-source! session
                               (format "(-> (+ %d x%d) x%d)"
@@ -724,7 +724,7 @@
           forward-ms (elapsed-ms
                       #(runtime-append!
                         forward-session
-                        "(def-net later [x] [out] (<-> (+ x 1) out))"))]
+                        "(define later (network [x out] (<-> (+ x 1) out) (list out)))"))]
       {:setup-rebuild-ms setup-ms
        :incremental-watcher-ms watcher-ms
        :post-install-update-ms update-ms

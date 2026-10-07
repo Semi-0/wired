@@ -1,13 +1,14 @@
 (ns propagators.tui.graph.vijual.compiler-2-runtime-server-test
-  (:require [propagators.tui.assembly :as assembly]
-            [charm.components.text-input :as text-input]
+  (:require [charm.components.text-input :as text-input]
             [charm.components.viewport :as viewport]
             [charm.message :as charm-msg]
             [charm.style.core :as style]
+            [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [propagators.runtime :as runtime]
+            [propagators.tui.assembly :as assembly]
             [propagators.tui.graph.compiler-2-runtime-dashboard :as dashboard]
             [propagators.tui.graph.compiler-2-temperature-plot :as temperature-plot]
             [propagators.runtime.inspection.annotations :as tui-annotations]
@@ -29,12 +30,7 @@
             [propagators.infra.semantic-trace :as semantic-trace]))
 
 (def source
-  "(let-cell [same next]
-     ((network [x] [same next]
-        (<-> x same)
-        (<-> (+ x 1) next))
-      4 same next)
-     next)")
+  "(let-cell [same next] ((network [x same next] (<-> x same) (<-> (+ x 1) next) (list same next)) 4 same next) next)")
 
 (defn- runtime-binding-id
   [state sym]
@@ -45,11 +41,11 @@
         graph (runtime/compile-source! session source)
         trace (runtime/semantic-trace @session {:label "next"
                                                 :direction :upstream})
-        expansion (semantic-repl/expansion trace {:label "call :: [x]"})]
+        expansion (semantic-repl/expansion trace {:label "call network [x same next]"})]
     (is (= "4" (get (semantic-repl/value-labels expansion) "x")))
     (is (= "5" (get (semantic-repl/value-labels graph) "next")))
-    (is (contains? (set (semantic-repl/edge-labels trace)) ["4" "call :: [x]"]))
-    (is (contains? (set (semantic-repl/edge-labels trace)) ["call :: [x]" "next"]))
+    (is (contains? (set (semantic-repl/edge-labels trace)) ["4" "call network [x same next]"]))
+    (is (contains? (set (semantic-repl/edge-labels trace)) ["call network [x same next]" "next"]))
     (is (contains? (set (semantic-repl/edge-labels expansion)) ["+" "<->"]))
     (is (contains? (set (semantic-repl/edge-labels expansion)) ["x" "+"]))))
 
@@ -108,7 +104,7 @@
     (is (empty? (:edges trace)))))
 
 (deftest runtime-rebuild-has-no-source-special-forms
-  (let [runtime-source (slurp "propagators.infra/compiler_2/runtime.clj")]
+  (let [runtime-source (slurp (io/resource "propagators/runtime.clj"))]
     (is (not (str/includes? runtime-source "runtime-sync-form?")))
     (is (not (str/includes? runtime-source "runtime-trace-form?")))
     (is (not (str/includes? runtime-source "rebuild-sync-form")))
@@ -160,16 +156,16 @@
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(def a)"})
+                                        :text "(define a)"})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
-      (is (= "(def a)" (get-in view [:blocks 0 :value])))
+      (is (= "(define a)" (get-in view [:blocks 0 :value])))
       (is (nil? (get-in @session [:program/results ["A" 0] :error]))))))
 
 (deftest explicit-block-at-target-displays-nothing
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(def a)"})
+                                        :text "(define a)"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/edit-tui-block! session {:client-id "A"
@@ -268,13 +264,12 @@
 #_(deftest be-block-target-expression-displays-latest-update
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (runtime/append-tui-block! session {:client-id "A" :text "(def events)"})
-    (runtime/append-tui-block! session {:client-id "A" :text "(def out)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(define events)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(define out)"})
     (runtime/append-tui-block!
      session
      {:client-id "A"
-      :text "(def-net retain-event [acc update] [out]
-               (behavior-add-event acc update out))"})
+      :text "(define retain-event (network [acc update out] (behavior-add-event acc update out) (list out)))"})
     (runtime/append-tui-block!
      session
      {:client-id "A"
@@ -282,8 +277,7 @@
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> out (be:block 5))"})
     (let [events-id (cenv/resolve-binding-id (:program/net @session)
-                                             (:program/env @session)
-                                             'events)]
+                                            (:program/env @session) 'events)]
       (runtime/commit-runtime-input! session
                                      {:runtime/input :cell-message
                                       :cell-id events-id
@@ -309,7 +303,7 @@
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(def-cells a out)"})
+                                        :text "(define a)\n(define out)"})
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> (+ a 1) out)"})
     (runtime/append-tui-block! session {:client-id "A"
@@ -619,9 +613,9 @@
 (deftest tui-slider-panel-events-feed-default-arithmetic
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [source ["(def-cells a b c d)"
+    (doseq [source ["(define a)\n(define b)\n(define c)\n(define d)"
                     "(-> (- (+ a c) b) d)"
-                    "(def-cell g)"
+                    "(define g)"
                     "(trace d g)"
                     "(io:xr g)"
                     "(io:slider-panels a b c)"
@@ -658,7 +652,7 @@
 (deftest tui-slider-panel-events-feed-nested-derived-event-arithmetic
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [source ["(def-cells a b c d e)"
+    (doseq [source ["(define a)\n(define b)\n(define c)\n(define d)\n(define e)"
                     "(-> (+ a (- b c)) e)"
                     "(-> e (block 3))"
                     "(io:slider-panels a b c)"]]
@@ -729,7 +723,7 @@
 (deftest block-target-rejects-non-empty-past-block
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (runtime/append-tui-block! session {:client-id "A" :text "(def occupied)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(define occupied)"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"})
     (is (thrown-with-msg?
@@ -744,7 +738,7 @@
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(def a)"})
+                                        :text "(define a)"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/edit-tui-block! session {:client-id "A"
@@ -761,8 +755,7 @@
     (runtime/register-tui! session {:client-id "grow"})
     (runtime/append-tui-block! session
                                {:client-id "grow"
-                                :text "(def-net inc1 [x] [out]
-                                        (<-> (+ x 1) out))"})
+                                :text "(define inc1 (network [x out] (<-> (+ x 1) out) (list out)))"})
     (runtime/append-tui-block! session {:client-id "grow"})
     (runtime/append-tui-block! session
                                {:client-id "grow"
@@ -775,11 +768,9 @@
     (runtime/edit-tui-block! session
                              {:client-id "grow"
                               :index 0
-                              :text "(def-net inc1 [x] [out]
-                                      (<-> (+ x 2) out))"})
+                              :text "(define inc1 (network [x out] (<-> (+ x 2) out) (list out)))"})
     (let [view (runtime/read-tui-view @session {:client-id "grow"})]
-      (is (= "(def-net inc1 [x] [out]
-                                      (<-> (+ x 2) out))"
+      (is (= "(define inc1 (network [x out] (<-> (+ x 2) out) (list out)))"
              (get-in view [:blocks 0 :value])))
       (is (= 6 (get-in view [:blocks 1 :value]))))))
 
@@ -789,8 +780,7 @@
     (runtime/register-tui! session {:client-id "b"})
     (runtime/append-tui-block! session
                                {:client-id "a"
-                                :text "(def-net inc1 [x] [out]
-                                        (<-> (+ x 1) out))"})
+                                :text "(define inc1 (network [x out] (<-> (+ x 1) out) (list out)))"})
     (runtime/append-tui-block! session {:client-id "b"})
     (runtime/append-tui-block! session
                                {:client-id "b"
@@ -841,8 +831,7 @@
     (runtime/append-tui-block! session {:client-id "order"})
     (runtime/append-tui-block! session
                                {:client-id "order"
-                                :text "(def-net later [x] [out]
-                                        (<-> (+ x 1) out))"})
+                                :text "(define later (network [x out] (<-> (+ x 1) out) (list out)))"})
     (let [view (runtime/read-tui-view @session {:client-id "order"})]
       (is (= 5 (get-in view [:blocks 1 :value]))))))
 
@@ -857,15 +846,16 @@
     (runtime/append-tui-block!
      session
      {:client-id "A"
-      :text "(def-net later [x] [out] (<-> (+ x 1) out))"})
+      :text "(define later (network [x out] (<-> (+ x 1) out) (list out)))"})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 5 (get-in view [:blocks 1 :value])))
       (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
 
-(deftest be-block-watch-installs-and-updates-without-full-rebuild
+(def ^:private watch-network-state
+  ;; Compile the shared fixture once; every test owns a fresh session atom.
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (runtime/append-tui-block! session {:client-id "A" :text "(def x0)"})
+    (runtime/append-tui-block! session {:client-id "A" :text "(define x0)"})
     (doseq [i (range 1 11)]
       (runtime/append-tui-block!
        session
@@ -873,6 +863,10 @@
         :text (format "(-> (+ %d x%d) x%d)" i (dec i) i)}))
     (runtime/append-tui-block! session {:client-id "A"
                                         :text "(-> x10 (be:block 20))"})
+    @session))
+
+(deftest be-block-watch-installs-and-updates-without-full-rebuild
+  (let [session (atom watch-network-state)]
     (runtime/commit-runtime-input!
      session
      {:runtime/input :cell-message
@@ -880,19 +874,13 @@
       :update 1})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 56 (get-in view [:blocks 20 :value])))
-      (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
+      (is (zero? (:runtime/full-rebuild-fallbacks @session)))
+      (is (= value/nothing
+             (net/network-cell-strongest (:program/net watch-network-state)
+                                        (runtime-binding-id watch-network-state 'x0)))))))
 
 (deftest edited-be-block-watch-uses-new-display-epoch
-  (let [session (assembly/new-session)]
-    (runtime/register-tui! session {:client-id "A"})
-    (runtime/append-tui-block! session {:client-id "A" :text "(def x0)"})
-    (doseq [i (range 1 11)]
-      (runtime/append-tui-block!
-       session
-       {:client-id "A"
-        :text (format "(-> (+ %d x%d) x%d)" i (dec i) i)}))
-    (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(-> x10 (be:block 20))"})
+  (let [session (atom watch-network-state)]
     (runtime/commit-runtime-input!
      session
      {:runtime/input :cell-message
@@ -905,14 +893,17 @@
                                       :text "(-> x5 (be:block 20))"})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 16 (get-in view [:blocks 20 :value])))
-      (is (zero? (:runtime/full-rebuild-fallbacks @session))))))
+      (is (zero? (:runtime/full-rebuild-fallbacks @session)))
+      (is (= value/nothing
+             (net/network-cell-strongest (:program/net watch-network-state)
+                                        (runtime-binding-id watch-network-state 'x0)))))))
 
 (deftest later-def-net-updates-earlier-free-cell-watch
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/register-tui! session {:client-id "B"})
     (runtime/append-tui-block! session {:client-id "A"
-                                        :text "(def a)"})
+                                        :text "(define a)"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/edit-tui-block! session {:client-id "A"
@@ -925,8 +916,7 @@
                    [:blocks 2 :value])))
     (runtime/append-tui-block! session
                                {:client-id "B"
-                                :text "(def-net inc [x] [out]
-                                        (<-> (+ x 1) out))"})
+                                :text "(define inc (network [x out] (<-> (+ x 1) out) (list out)))"})
     (let [view (runtime/read-tui-view @session {:client-id "A"})]
       (is (= 2 (get-in view [:blocks 2 :value]))))))
 
@@ -936,9 +926,7 @@
     (runtime/append-tui-block!
      session
      {:client-id "A"
-      :text "(def-net retain [acc next] [out]
-               (behavior-add-event acc next full)
-               (behavior-retain-last full 1 out))"})
+      :text "(define retain (network [acc next out] (behavior-add-event acc next full) (behavior-retain-last full 1 out) (list out)))"})
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block!
      session
@@ -957,14 +945,7 @@
   (let [session (assembly/new-session)]
     (xr/xr-extend-graph!
      session
-     {:source "(def events)
-               (def retained)
-               (def out)
-               (def-net retain [acc update] [full]
-                 (behavior-add-event acc update full))
-               (behavior-event 6 2 events)
-               (behavior events retain (behavior-empty-state) retained)
-               (<-> (+ retained retained) out)"})
+     {:source "(define events)\n(define retained)\n(define out)\n(define retain (network [acc update full] (behavior-add-event acc update full) (list full)))\n(behavior-event 6 2 events)\n(behavior events retain (behavior-empty-state) retained)\n(<-> (+ retained retained) out)"})
     (let [labels (set (map :label (:nodes (xr/graph->json (:graph @session)))))]
       (is (not-any? #(str/starts-with? % "slot generic/") labels))
       (is (not-any? #(str/starts-with? % "slot method/") labels))
@@ -1014,8 +995,8 @@
     (runtime/register-tui! session {:client-id "A"})
     (dotimes [_ 10]
       (runtime/append-tui-block! session {:client-id "A"}))
-    (doseq [[index text] [[5 "(def out3)"]
-                          [6 "(def x 1)"]
+    (doseq [[index text] [[5 "(define out3)"]
+                          [6 "(define x 1)"]
                           [7 "(<-> (- 3 x) out3)"]
                           [8 "(block-at (instance A) 9 out3)"]]]
       (runtime/edit-tui-block! session {:client-id "A"
@@ -1029,8 +1010,8 @@
 (deftest translate-primitive-is-bidirectional
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def jp)"
-                  "(def en)"
+    (doseq [text ["(define jp)"
+                  "(define en)"
                   "(translate jp en)"
                   "(<-> jp \"猫\")"
                   "(block-at (instance A) 5 en)"]]
@@ -1041,8 +1022,8 @@
       (is (= "cat" (get-in view [:blocks 5 :value])))))
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def jp)"
-                  "(def en)"
+    (doseq [text ["(define jp)"
+                  "(define en)"
                   "(translate jp en)"
                   "(<-> en \"dog\")"
                   "(block-at (instance A) 5 jp)"]]
@@ -1055,9 +1036,9 @@
 (deftest blank-target-append-rebuilds-previous-trace-output
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def a)"
+    (doseq [text ["(define a)"
                   "(<-> (- 3 1) a)"
-                  "(def g)"
+                  "(define g)"
                   "(trace a :upstream g)"]]
       (runtime/append-tui-block! session {:client-id "A"
                                           :text text}))
@@ -1073,9 +1054,9 @@
 (deftest terminal-trace-coalesces-aliased-target-cell
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def-cells a b c d)"
+    (doseq [text ["(define a)\n(define b)\n(define c)\n(define d)"
                   "(-> (- (+ a c) b) d)"
-                  "(def-cell g)"
+                  "(define g)"
                   "(trace d g)"
                   "(-> g (block 5))"]]
       (runtime/append-tui-block! session {:client-id "A"
@@ -1094,25 +1075,25 @@
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
     (runtime/register-tui! session {:client-id "B"})
-    (doseq [text ["(def a)"
+    (doseq [text ["(define a)"
                   "(<-> (- 3 1) a)"
-                  "(def g)"
+                  "(define g)"
                   "(trace a :upstream g)"]]
       (runtime/append-tui-block! session {:client-id "A"
                                           :text text}))
     (runtime/append-tui-block! session {:client-id "A"})
     (runtime/append-tui-block! session {:client-id "B"
-                                        :text "(def b 9)"})
+                                        :text "(define b 9)"})
     (let [a-view (runtime/read-tui-view @session {:client-id "A"})
           b-view (runtime/read-tui-view @session {:client-id "B"})]
       (is (tui/graph-value? (get-in a-view [:blocks 4 :value])))
-      (is (= "(def b 9)" (get-in b-view [:blocks 0 :value]))))))
+      (is (= "(define b 9)" (get-in b-view [:blocks 0 :value]))))))
 
 (deftest trace-block-reacts-to-later-upstream-relationships
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def a)"
-                  "(def g)"
+    (doseq [text ["(define a)"
+                  "(define g)"
                   "(trace a :upstream g)"]]
       (runtime/submit-tui-block! session {:client-id "A"
                                           :text text}))
@@ -1130,9 +1111,9 @@
 (deftest submitted-trace-keeps-upstream-literal-constants
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def a)"
+    (doseq [text ["(define a)"
                   "(<-> (+ 1 2) a)"
-                  "(def g)"
+                  "(define g)"
                   "(trace a :upstream g)"]]
       (runtime/submit-tui-block! session {:client-id "A"
                                           :text text}))
@@ -1153,10 +1134,10 @@
 (deftest trace-block-reacts-through-intermediate-cell-chain
   (let [session (assembly/new-session)]
     (runtime/register-tui! session {:client-id "A"})
-    (doseq [text ["(def a)"
-                  "(def b)"
+    (doseq [text ["(define a)"
+                  "(define b)"
                   "(<-> b a)"
-                  "(def g)"
+                  "(define g)"
                   "(trace a :upstream g)"]]
       (runtime/submit-tui-block! session {:client-id "A"
                                           :text text}))
@@ -1178,14 +1159,7 @@
     (runtime/append-tui-block! session {:client-id "tui-graph"})
     (runtime/append-tui-block! session
                                {:client-id "tui-graph"
-                                :text "(let-cell [same next g]
-                                        ((network [x] [same next]
-                                           (<-> x same)
-                                           (<-> (+ x 1) next))
-                                         4 same next)
-                                        (trace next g)
-                                        (block-at % 0 g)
-                                        g)"})
+                                :text "(let-cell [same next g] ((network [x same next] (<-> x same) (<-> (+ x 1) next) (list same next)) 4 same next) (trace next g) (block-at % 0 g) g)"})
     (let [view (runtime/read-tui-view @session {:client-id "tui-graph"})
           rendered (tui/render-view view)]
       (is (tui/graph-value? (get-in view [:blocks 0 :value])))
@@ -1433,8 +1407,7 @@
     (runtime/register-tui! session {:client-id "a"})
     (runtime/register-tui! session {:client-id "b"})
     (runtime/append-tui-block! session {:client-id "a"
-                                        :text "(def-net inc1 [x] [next]
-                                                (<-> (+ x 1) next))"})
+                                        :text "(define inc1 (network [x next] (<-> (+ x 1) next) (list next)))"})
     (runtime/append-tui-block! session {:client-id "b"})
     (runtime/append-tui-block! session {:client-id "b"
                                         :text "(let-cell [next g]
@@ -1459,8 +1432,7 @@
     (runtime/register-tui! session {:client-id "tui-a"})
     (runtime/append-tui-block! session
                                {:client-id "tui-a"
-                                :text "(def-net inc [x] [next]
-                                        (<-> (+ x 1) next))"})
+                                :text "(define inc (network [x next] (<-> (+ x 1) next) (list next)))"})
     (runtime/append-tui-block! session {:client-id "tui-a"})
     (runtime/append-tui-block! session
                                {:client-id "tui-a"
@@ -1487,8 +1459,7 @@
     (runtime/register-tui! session {:client-id "tui-b"})
     (runtime/append-tui-block! session
                                {:client-id "tui-a"
-                                :text "(def-net inc1 [x] [next]
-                                        (<-> (+ x 1) next))"})
+                                :text "(define inc1 (network [x next] (<-> (+ x 1) next) (list next)))"})
     (runtime/append-tui-block! session {:client-id "tui-a"})
     (runtime/append-tui-block! session {:client-id "tui-b"})
     (runtime/append-tui-block! session
@@ -1519,12 +1490,12 @@
                                      :label "next"
                                      :direction :upstream})
               expansion (semantic-repl/expansion (:result trace)
-                                                 {:label "call :: [x]"})]
+                                                 {:label "call network [x same next]"})]
           (is (:ok cells))
           (is (some #(= "result" (:label %)) (:result cells)))
           (is (= "4" (get (semantic-repl/value-labels expansion) "x")))
           (is (contains? (set (semantic-repl/edge-labels (:result trace)))
-                         ["call :: [x]" "next"]))))
+                         ["call network [x same next]" "next"]))))
       (testing "installed tracer can be read by another client"
         (let [installed (server/request server/default-host port
                                         {:op :semantic/trace/install
@@ -1536,7 +1507,7 @@
                                         {:op :semantic/trace/read
                                          :trace-id trace-id})
               expansion (semantic-repl/expansion (get-in read-back [:result :graph])
-                                                 {:label "call :: [x]"})]
+                                                 {:label "call network [x same next]"})]
           (is (:ok installed))
           (is (:ok read-back))
           (is (contains? (set (semantic-repl/edge-labels expansion))

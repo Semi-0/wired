@@ -1,21 +1,15 @@
-(def info
+(define info
   (cons "knights-of-the-situation-calculus:\n"
         "https://discord.gg/aPRZfafAns"))
 
-(def-net retain-latest-line [acc update] [out]
-  (let-cell [full]
-    (behavior-add-event acc update full)
-    (behavior-retain-last full 1 out)))
-
-(def-net accumulate-lines [items] [text]
-  (let-cell [title url current events]
+(define join-lines (network [items text]
+  (let-cell [title url]
     (p:car title items)
     (p:cdr url items)
-    (-> (str title url) current)
-    (behavior-event 0 current events)
-    (behavior events retain-latest-line (behavior-empty-state) text)))
+    (-> (str title url) text)
+    (list text))))
 
-(def-net print-lines [items block] []
+(define print-lines (network [items block]
   (let-cell [text]
-    (accumulate-lines items text)
-    (block-at (instance printer) block text)))
+    (join-lines items text)
+    (block-at (instance printer) block text))))

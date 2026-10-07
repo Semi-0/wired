@@ -1,37 +1,23 @@
-;; Every intermediate is data; only xr:io performs publication.
-(def-cells input output relationships chain-graph selection)
-(def-net chain [x] [out]
-  (-> (tracked+ (tracked+ x 1) 1) out))
+(define input)
+(define output)
+(define relationships)
+(define chain-graph)
+(define selection)
+(define chain (network [x out] (-> (tracked+ (tracked+ x 1) 1) out) (list out)))
 (chain input output)
 (-> 5 input)
-
-(def selected (occurrence-of chain input output))
+(define selected (occurrence-of chain input output))
 (relationship:roots input output relationships)
 (relationship:dataflow relationships chain-graph)
-(def boundary? (:: [item]
-  (tracked-or (member? item (inputs-of selected))
-              (member? item (outputs-of selected)))))
-(def boundary (filter boundary? chain-graph))
-(def boundary-list (transpose boundary :list))
-(def values (map (:: [item] (strongest-of item))
-                 boundary-list))
-(def focused (focus values selection))
-(def sources (sources-of focused))
-(def zoom (map (:: [ref] (strongest-of ref))
-               sources))
-
-;; The composition can itself be observed with the same graph tooling.
-(def-cells composition-relationships composition-graph)
+(define boundary? (network [item] (tracked-or (member? item (inputs-of selected)) (member? item (outputs-of selected)))))
+(define boundary (filter boundary? chain-graph))
+(define boundary-list (transpose boundary :list))
+(define values (map (network [item] (strongest-of item)) boundary-list))
+(define focused (focus values selection))
+(define sources (sources-of focused))
+(define zoom (map (network [ref] (strongest-of ref)) sources))
+(define composition-relationships)
+(define composition-graph)
 (relationship:roots values zoom composition-relationships)
 (relationship:dataflow composition-relationships composition-graph)
-
-;; Publish each intermediate collection and the composition's own topology.
-;; Selecting a value drives focused, sources, and zoom without changing sources.
-(xr:io (juxtapose chain-graph
-                  boundary
-                  boundary-list
-                  (selectable values selection)
-                  focused
-                  sources
-                  zoom
-                  composition-graph))
+(xr:io (juxtapose chain-graph boundary boundary-list (selectable values selection) focused sources zoom composition-graph))

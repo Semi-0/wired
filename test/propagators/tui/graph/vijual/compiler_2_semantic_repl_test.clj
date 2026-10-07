@@ -14,9 +14,7 @@
 (deftest semantic-repl-projects-compiler-2-expression
   (testing "semantic graph collapses resolved closure calls and stores expansion"
     (let [graph (repl/semantic-graph
-                 "(let-cell [inc-local]
-                    (<-> inc-local (:: [x] (+ x 1)))
-                    (inc-local 5))")
+                 "(let-cell [inc-local] (<-> inc-local (network [x] (+ x 1))) (inc-local 5))")
           expansion (repl/expansion graph {:label "call inc-local"})]
       (is (contains? (label-edges graph) ["5" "call inc-local"]))
       (is (contains? (label-edges graph) ["call inc-local" "result"]))
@@ -29,18 +27,13 @@
 (deftest semantic-repl-consolidates-explicit-network-output-cells
   (testing "network output applicants collapse to boundary cells with expansion"
     (let [graph (repl/semantic-graph
-                 "(let-cell [same next]
-                    ((network [x] [same next]
-                       (<-> x same)
-                       (<-> (+ x 1) next))
-                     4 same next)
-                    next)")
+                 "(let-cell [same next] ((network [x same next] (<-> x same) (<-> (+ x 1) next) (list same next)) 4 same next) next)")
           edges (label-edges graph)
-          expansion (repl/expansion graph {:label "call :: [x]"})
+          expansion (repl/expansion graph {:label "call network [x same next]"})
           expansion-edges (label-edges expansion)]
-      (is (contains? edges ["4" "call :: [x]"]))
-      (is (contains? edges ["call :: [x]" "same"]))
-      (is (contains? edges ["call :: [x]" "next"]))
+      (is (contains? edges ["4" "call network [x same next]"]))
+      (is (contains? edges ["call network [x same next]" "same"]))
+      (is (contains? edges ["call network [x same next]" "next"]))
       (is (not (contains? (labels graph) "+")))
       (is (contains? expansion-edges ["4" "x"]))
       (is (contains? expansion-edges ["x" "<->"]))
@@ -64,12 +57,7 @@
 
 (deftest semantic-repl-canonicalizes-variable-cell-through-call
   (let [graph (repl/semantic-graph
-               "(let-cell []
-                  (def out)
-                  (-> 42 out)
-                  (def inc (network [a] [b] (-> (+ a 1) b)))
-                  (def out3)
-                  (inc out out3))")
+               "(let-cell [] (define out) (-> 42 out) (define inc (network [a b] (-> (+ a 1) b) (list b))) (define out3) (inc out out3))")
         edges (label-edges graph)]
     (is (= 1 (get (label-frequencies graph) "out")))
     (is (contains? edges ["42" "->"]))

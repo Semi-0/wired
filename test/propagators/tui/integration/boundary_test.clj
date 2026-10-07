@@ -29,10 +29,7 @@
 
 (deftest language-trace-publishes-reactively-without-tui
   (let [session (state/new-session)
-        source "(let-cell [next traced]
-                  ((network [x] [out] (<-> (+ x 1) out)) 4 next)
-                  (trace next traced)
-                  traced)"
+        source "(let-cell [next traced] ((network [x out] (<-> (+ x 1) out) (list out)) 4 next) (trace next traced) traced)"
         _ (runtime/compile-source! session source)
         target-id (get-in @session [:compiled :cell])]
     (is (empty? (:tuis @session)))

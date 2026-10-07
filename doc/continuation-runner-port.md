@@ -1,5 +1,12 @@
 # Runner and visualization port: review status
 
+Historical port snapshot. The functional-network migration subsequently fixes
+the listed shared-session and routing regressions: maintained web tests pass
+32/163 assertions and the four targeted shared-session regressions pass 4/14
+assertions on published compiler/runtime pins. See
+[current corrections](web-functional-network-corrections.md). This report retains
+its original baseline evidence; repository default-branch settings are unchanged.
+
 Source: `Semi-0/datalog-research` at
 `5a1c0be62e44c48510f69316c766ccfcaa5251af`.
 

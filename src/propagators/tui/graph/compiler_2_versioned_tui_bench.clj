@@ -102,7 +102,7 @@
          {:commit-id (str (UUID/randomUUID))
           :client-id "bench" :index 0
           :expected-version (when (pos? version) (dec version))
-          :text (str "(def-net f [x] [out] (-> (+ x " version ") out))")})
+          :text (str "(define f (network [x out] (-> (+ x " version ") out) (list out)))")})
         (runtime/commit-version!
          session
          {:commit-id (str (UUID/randomUUID))
@@ -145,7 +145,7 @@
                                     :mode :versioned-premise})
     (commit! {:commit-id (str (UUID/randomUUID))
               :client-id client-id :index 0 :expected-version nil
-              :text "(def-net f [x] [out] (-> (+ x 0) out))"})
+              :text "(define f (network [x out] (-> (+ x 0) out) (list out)))"})
     (commit! {:commit-id (str (UUID/randomUUID))
               :client-id client-id :index 1 :expected-version nil
               :text "(let-cell [x out] (f x out) out)"})
@@ -153,8 +153,8 @@
       (commit! {:commit-id (str (UUID/randomUUID))
                 :client-id client-id :index 0
                 :expected-version (dec version)
-                :text (str "(def-net f [x] [out] (-> (+ x " version
-                           ") out))")}))
+                :text (str "(define f (network [x out] (-> (+ x " version
+                           ") out) (list out)))")}))
     (let [runtime-state @session
           {:keys [input-id output-id]}
           (current-application-io runtime-state client-id 1)
@@ -214,8 +214,8 @@
               session
               {:commit-id (str (UUID/randomUUID))
                :client-id "bench" :index 0 :expected-version expected
-               :text (str "(def-net f [x] [out] (-> (+ x " version
-                          ") out))")})
+               :text (str "(define f (network [x out] (-> (+ x " version
+                          ") out) (list out)))")})
              application-ms
              (timed-commit!
               session

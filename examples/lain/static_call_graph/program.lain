@@ -1,9 +1,3 @@
-(def analysis
-  (clojure-call-graph
-   "src"
-   "propagators.tui.graph.xr-runtime/graph->json"
-   0))
-
-(def calls (call-graph-result analysis))
-
+(define analysis (clojure-call-graph "src" "propagators.tui.graph.xr-runtime/graph->json" 0))
+(define calls (call-graph-result analysis))
 (xr:io calls)

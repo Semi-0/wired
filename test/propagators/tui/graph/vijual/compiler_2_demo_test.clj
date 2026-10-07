@@ -20,11 +20,19 @@
     (let [[main-stage expanded-stage] (demo/compiled-progression demo/source)
           labels (stage-labels main-stage)]
       (is (contains? labels "inc-local"))
-      (is (contains? labels ":: [x]"))
+      (is (contains? labels "network [x]"))
       (is (contains? labels "5"))
       (is (contains? labels "app:<->"))
       (is (contains? labels "ctx:<->"))
+      (is (contains? labels "<->"))
       (is (contains? labels "app:inc-local"))
+      (let [call (first (filter #(= "inc-local" (:operator-label %))
+                                (demo/application-records (:compiled main-stage)
+                                                          (:network main-stage))))]
+        (is (some #{(:app-id call)} (:props (:compiled main-stage)))))
+      (is (some #(and (= "inc-local" (:operator-label %))
+                       (= 1 (count (:arg-cells %))))
+                (demo/application-records (:compiled main-stage) (:network main-stage))))
       (is (contains? (stage-labels expanded-stage) "result"))))
 
   (testing "closure body subgraph labels its argument and primitive application"
@@ -34,7 +42,11 @@
       (is (contains? labels "x"))
       (is (contains? labels "1"))
       (is (contains? labels "app:+"))
-      (is (contains? labels "ctx:+")))))
+      (is (contains? labels "ctx:+"))
+      (is (contains? labels "+"))
+      (is (some #(and (= "+" (:operator-label %))
+                       (= 2 (count (:arg-cells %))))
+                (demo/application-records (:compiled closure-stage) (:network closure-stage)))))))
 
 (deftest compiler-2-demo-infers-semantic-graph
   (testing "main semantic graph collapses sync and closure call wiring"
@@ -44,13 +56,13 @@
           graph (:graph semantic-main)
           labels (graph-labels graph)
           edges (graph-label-edges graph)]
-      (is (= #{"inc-local" ":: [x]" "<->"
+      (is (= #{"inc-local" "network [x]" "<->"
                "call inc-local" "5" "result"}
              labels))
       (is (contains? edges ["inc-local" "<->"]))
-      (is (contains? edges [":: [x]" "<->"]))
+      (is (contains? edges ["network [x]" "<->"]))
       (is (contains? edges ["<->" "inc-local"]))
-      (is (contains? edges ["<->" ":: [x]"]))
+      (is (contains? edges ["<->" "network [x]"]))
       (is (contains? edges ["inc-local" "call inc-local"]))
       (is (contains? edges ["5" "call inc-local"]))
       (is (contains? edges ["call inc-local" "result"]))))

@@ -1,11 +1,6 @@
-;; Requires the experimental layered-primitives/session-extension.
-;; The test seeds these declared cells through the normal runtime cell API.
-(def-cells seed captured out)
-
-(def-net transform [item] [out]
-  (-> (tracked+ item captured) out))
-
-(def-net apply-transform [f item] [out]
-  (f item out))
-
+(define seed)
+(define captured)
+(define out)
+(define transform (network [item out] (-> (tracked+ item captured) out) (list out)))
+(define apply-transform (network [f item out] (f item out) (list out)))
 (apply-transform transform seed out)

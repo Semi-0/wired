@@ -1,33 +1,71 @@
 (ns propagators.tui.integration.file-loader-test
-  (:require [propagators.tui.assembly :as assembly]
-            [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is]]
             [propagators.runtime :as runtime]
+            [propagators.tui.assembly :as assembly]
             [propagators.runtime.session.file-loader :as loader]
+            [propagators.runtime.inspection.annotations :as annotations]
             [propagators.tui.adapters.bridge.web :as bridge]
             [propagators.tui.graph.compiler-2-runtime-server :as server]
             [propagators.compiler.model.env :as cenv]
+            [propagators.infra.datastructures.event :as event]
             [propagators.infra.network :as net]))
 
-(def demo-file "examples/lain/demo.lain")
+(def slider-file "dev/examples/lain/slider-panel.lain")
+(def demo-file "dev/examples/lain/demo.lain")
+(def demo-print-command "(print-lines info 0)")
+(def demo-expected-text
+  "knights-of-the-situation-calculus:\nhttps://discord.gg/aPRZfafAns")
 
-(deftest demo-lain-info-form-loads
+(defn- commit-slider!
+  [session channel value]
+  (runtime/commit-runtime-input! session
+                                 {:runtime/input :xr/widget-event
+                                  :widget-id "slider-panel-0"
+                                  :channel channel
+                                  :value value}))
+
+(defn- cell-content
+  [session symbol]
+  (let [cell-id (cenv/resolve-binding-id (:program/net @session)
+                                         (:program/env @session)
+                                         symbol)]
+    (net/network-cell-content (:program/net @session) cell-id)))
+
+(deftest lain-file-loads-pure-server-instance-and-slider-events-update-output
   (let [session (assembly/new-session)
-        info-source (-> demo-file
-                        loader/read-file-source
-                        loader/source-forms
-                        first
-                        pr-str)
+        server {:session session :loaded (loader/load-file! session slider-file)}]
+    (is (some? session))
+    (is (= 9 (count (get-in server [:loaded :load-result :blocks]))))
+    (is (= "slider-panel-0"
+           (-> @session :xr :widgets keys first)))
+    (commit-slider! session "a" 10)
+    (commit-slider! session "b" 4)
+    (commit-slider! session "c" 3)
+    (let [d-content (cell-content session 'd)]
+      (is (= [9] (vec (vals (event/active-values d-content)))))
+      (is (= 9 (annotations/project-value d-content))))
+    (commit-slider! session "a" 11)
+    (let [d-content (cell-content session 'd)]
+      (is (= [10] (vec (vals (event/active-values d-content)))))
+      (is (= 10 (annotations/project-value d-content))))))
+
+(deftest demo-lain-prints-info-cell-into-one-tui-block
+  (let [session (runtime/new-session)
         client-id "printer"]
-    (loader/load-source! session info-source {:client-id client-id})
-    (is (some? (cenv/resolve-binding-id
-                (:program/net @session)
-                (:program/env @session)
-                'info)))))
+    (runtime/register-tui! session {:client-id client-id})
+    (runtime/append-tui-block! session {:client-id client-id})
+    (loader/load-file! session demo-file {:client-id client-id})
+    (runtime/append-tui-block! session {:client-id client-id
+                                        :text demo-print-command})
+    (let [view (runtime/read-tui-view @session {:client-id client-id})]
+      (is (= demo-expected-text (get-in view [:blocks 0 :value]))))))
 
 (deftest runtime-server-loads-lain-file-command
-  (let [{:keys [port close]} (server/start-server 0)
+  (let [{:keys [port close session]} (server/start-server 0)
         client-id "printer"]
     (try
+      (runtime/register-tui! session {:client-id client-id})
+      (runtime/append-tui-block! session {:client-id client-id})
       (let [response (server/request server/default-host
                                      port
                                      {:op :compile/load-file
@@ -37,33 +75,55 @@
         (is (= client-id (get-in response [:result :client-id])))
         (is (re-find #"demo\.lain$"
                      (get-in response [:result :file]))))
+      (runtime/append-tui-block! session {:client-id client-id
+                                          :text demo-print-command})
+      (let [view (runtime/read-tui-view @session {:client-id client-id})]
+        (is (= demo-expected-text (get-in view [:blocks 0 :value]))))
       (finally
         (close)))))
 
 (deftest runtime-server-startup-load-option-loads-lain-file
-  (let [temporary (java.io.File/createTempFile "compiler2-startup-" ".lain")
-        _ (spit temporary "(def info 1)")
-        startup-file (.getAbsolutePath temporary)
-        client-id "printer"
+  (let [client-id "printer"
         opts (#'server/parse-server-args
-              ["--load" startup-file
+              ["--load" demo-file
                "--load-client" client-id
                "--load-blocks" "1"])
-        {:keys [close] :as server-state} (server/start-server 0)]
+        {:keys [close session] :as server-state} (server/start-server 0)]
     (try
-      (is (= startup-file (:load-file opts)))
+      (is (= demo-file (:load-file opts)))
       (is (= client-id (:load-client-id opts)))
       (let [loaded (#'server/load-startup-file! server-state opts)]
         (is (= client-id (:client-id loaded)))
-        (is (= startup-file (:file loaded))))
+        (is (re-find #"demo\.lain$" (:file loaded))))
+      (runtime/append-tui-block! session {:client-id client-id
+                                          :text demo-print-command})
+      (let [view (runtime/read-tui-view @session {:client-id client-id})]
+        (is (= demo-expected-text (get-in view [:blocks 0 :value]))))
       (finally
-        (close)
-        (.delete temporary)))))
+        (close)))))
+
+(deftest lain-source-normalizer-accepts-consecutive-top-level-forms
+  (is (= ['(define x) '(<-> 1 x)]
+         (loader/source-forms "(define x)\n(<-> 1 x)"))))
+
+(deftest lain-loader-preserves-block-by-block-def-net-application
+  (let [session (assembly/new-session)
+        source "(define clients)\n(runtime:clients clients)\n(define first-client (network [clients out] (p:car out clients) (list out)))\n(define f)\n(first-client clients f)"]
+    (loader/load-source! session source {:client-id "file-test"})
+    (runtime/commit-runtime-input! session
+                                   {:runtime/input :cell-message
+                                    :cell-id (bridge/client-list-source-id)
+                                    :update (bridge/linked-list-value ["A" "B"])})
+    (is (= (bridge/client-handle "A")
+           (net/network-cell-strongest
+            (:program/net @session)
+            (cenv/resolve-binding-id (:program/net @session)
+                                     (:program/env @session) 'f))))))
 
 (deftest runtime-server-watch-loads-a-fresh-relationship-environment
   (let [temporary (java.io.File/createTempFile "compiler2-watch-server-" ".lain")
         _ (spit temporary
-                "(def-cells a graph) (<-> 1 a) (relationship:roots a graph) (xr:io graph)")
+                "(define a) (define graph) (<-> 1 a) (relationship:roots a graph) (xr:io graph)")
         path (.getAbsolutePath temporary)
         opts (#'server/parse-server-args ["--watch" path "--no-dashboard"])
         server-state (binding [server/*temperature-logger-enabled?* false]
@@ -80,30 +140,6 @@
         ((:close server-state))
         (.delete temporary)))))
 
-(deftest lain-source-normalizer-accepts-consecutive-top-level-forms
-  (is (= ['(def-cell x) '(<-> 1 x)]
-         (loader/source-forms "(def-cell x)\n(<-> 1 x)"))))
-
-(deftest lain-loader-preserves-block-by-block-def-net-application
-  (let [session (assembly/new-session)
-        source "(def-cell clients)
-                (runtime:clients clients)
-                (def-net first-client [clients] [out]
-                  (p:car clients))
-                (def-cell f)
-                (first-client clients f)"]
-    (loader/load-source! session source {:client-id "file-test"})
-    (runtime/commit-runtime-input! session
-                                   {:runtime/input :cell-message
-                                    :cell-id (bridge/client-list-source-id)
-                                    :update (bridge/linked-list-value ["A" "B"])})
-      (is (= (bridge/client-handle "A")
-           (net/network-cell-strongest
-            (:program/net @session)
-            (cenv/resolve-binding-id
-             (:program/net @session)
-             (:program/env @session)
-             'f))))))
 
 (defn- binding-value
   [session symbol]
@@ -115,14 +151,14 @@
                               symbol))))
 
 (deftest fresh-replacement-discards-the-previous-environment
-  (let [session (loader/load-session-from-source "(def old-name 1)")]
-    (loader/replace-session-from-source! session "(def new-name 2)")
+  (let [session (loader/load-session-from-source "(define old-name 1)")]
+    (loader/replace-session-from-source! session "(define new-name 2)")
     (is (nil? (cenv/resolve-binding-id
                (:program/net @session) (:program/env @session) 'old-name)))
     (is (= 2 (binding-value session 'new-name)))))
 
 (deftest failed-replacement-retains-the-last-good-environment
-  (let [session (loader/load-session-from-source "(def stable 7)")
+  (let [session (loader/load-session-from-source "(define stable 7)")
         before @session]
     (is (thrown? Throwable
                  (loader/replace-session-from-source! session "(def stable")))
@@ -133,7 +169,7 @@
   (let [temporary (java.io.File/createTempFile "compiler2-watch-" ".lain")
         reloaded (promise)
         failed (promise)
-        _ (spit temporary "(def watched 1)")
+        _ (spit temporary "(define watched 1)")
         session (loader/load-session-from-file temporary)
         watcher (loader/watch-file!
                  session temporary
@@ -141,7 +177,7 @@
                   :on-reload #(deliver reloaded %)
                   :on-error #(deliver failed %)})]
     (try
-      (spit temporary "(def watched 2)")
+      (spit temporary "(define watched 2)")
       (is (not= ::timeout (deref reloaded 2000 ::timeout)))
       (is (= 2 (binding-value session 'watched)))
       (spit temporary "(def watched")

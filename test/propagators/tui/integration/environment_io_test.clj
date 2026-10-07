@@ -1,6 +1,5 @@
 (ns propagators.tui.integration.environment-io-test
-  (:require [propagators.tui.assembly :as assembly]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [propagators.tui.graph.compiler-2-versioned-tui.editor :as editor]
             [propagators.runtime :as runtime]
@@ -22,6 +21,11 @@
   (.toFile (Files/createTempFile "compiler-2-environment-" suffix
                                  (make-array java.nio.file.attribute.FileAttribute 0))))
 
+(defn initialized-state []
+  (let [session (runtime/new-session)]
+    (runtime/register-tui! session {:client-id "imports"})
+    @session))
+
 (defn commit!
   [session client-id index text]
   (runtime/commit-version!
@@ -33,7 +37,7 @@
     :text text}))
 
 (deftest primitive-module-extends-the-live-environment
-  (let [session (assembly/new-session)]
+  (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "live" :mode :versioned-premise})
     (commit! session "live" 0
              (pr-str (list 'load-primitive-environment
@@ -47,14 +51,13 @@
   (let [file (temp-file ".lain")
         _ (spit file (str "(load-primitive-environment "
                           (pr-str fixture-module) " " fixture-entry " 0)\n"
-                          "(def answer (square 6))\n"
+                          "(define answer (square 6))"
                           "(+ answer 1)\n"))
         request {:boundary/kind :environment/load-lain
                  :boundary/payload {:file (.getPath file) :revision 0}}
-        result (environment-io/load-lain
-                {:drain-environment-effects effects/drain-environment-effects}
-                (runtime-state/empty-state)
-                request)]
+        result (environment-io/load-lain-state
+                (initialized-state) (:boundary/payload request)
+                effects/drain-environment-effects)]
     (is (= :loaded (get-in result [:receipt :status])))
     (is (= 3 (get-in result [:receipt :installed-form-count])))
     (is (= 37 (get-in result [:state :program/results
@@ -64,10 +67,10 @@
                               :result])))))
 
 (deftest block-source-save-is-reloadable-s-expression-text
-  (let [session (assembly/new-session)
+  (let [session (runtime/new-session)
         file (temp-file ".lain")]
     (runtime/register-tui! session {:client-id "save" :mode :versioned-premise})
-    (commit! session "save" 0 "(def x 4)")
+    (commit! session "save" 0 "(define x 4)")
     (commit! session "save" 1 "  (+ x 3) ; keep spacing")
     (let [{next-state :state receipt :receipt}
           (environment-io/save-state
@@ -77,9 +80,9 @@
                      :checkpoint-id "save-1"
                      :client-id "save"})]
       (is (= :saved (:status receipt)))
-      (is (= ['(def x 4) '(+ x 3)]
+      (is (= ['(define x 4) '(+ x 3)]
              (environment-io/lain-forms (slurp file))))
-      (is (= "(def x 4)\n\n  (+ x 3) ; keep spacing\n"
+      (is (= "(define x 4)\n\n  (+ x 3) ; keep spacing\n"
              (slurp file)))
       (is (:replayed?
            (:receipt
@@ -91,7 +94,7 @@
                          :client-id "save"})))))))
 
 (deftest focus-is-ephemeral-per-client-and-queued-while-editing
-  (let [session (assembly/new-session)]
+  (let [session (runtime/new-session)]
     (runtime/register-tui! session {:client-id "focus" :mode :versioned-premise})
     (commit! session "focus" 0 "1")
     (let [focus (runtime/focus-block! session {:client-id "focus"
@@ -117,19 +120,18 @@
     (spit a (pr-str (list 'load-lain (.getCanonicalPath b) 0)))
     (spit b (pr-str (list 'load-lain (.getCanonicalPath a) 0)))
     (let [result
-          (environment-io/load-lain
-           {:drain-environment-effects effects/drain-environment-effects}
-           (runtime-state/empty-state)
-           {:boundary/kind :environment/load-lain
-            :boundary/payload {:file (.getPath a) :revision 0}})]
+          (environment-io/load-lain-state
+           (initialized-state)
+           {:file (.getPath a) :revision 0}
+           effects/drain-environment-effects)]
       (is (= :failed (get-in result [:receipt :status])))
       (is (re-find #"nested environment effect failed"
                    (pr-str (get-in result [:receipt :diagnostics])))))))
 
 (deftest load-blocks-appends-one-versioned-block-per-form
-  (let [session (assembly/new-session)
+  (let [session (runtime/new-session)
         file (temp-file ".lain")]
-    (spit file "(def a 2)\n(+ a 3)\n")
+    (spit file "(define a 2)\n(+ a 3)")
     (runtime/register-tui! session {:client-id "blocks"
                                     :mode :versioned-premise})
     (let [result
@@ -140,23 +142,23 @@
            effects/drain-environment-effects)
           view (runtime/read-tui-view (:state result) {:client-id "blocks"})]
       (is (= :loaded (get-in result [:receipt :status])))
-      (is (= ["(def a 2)" "(+ a 3)"]
+      (is (= ["(define a 2)" "(+ a 3)"]
              (mapv :source (take 2 (:blocks view)))))
       (is (= [0 0] (mapv :version (take 2 (:blocks view))))))))
 
 (deftest commit-supported-selects-one-active-definition
-  (let [session (assembly/new-session)
+  (let [session (runtime/new-session)
         file (temp-file ".lain")]
     (runtime/register-tui! session {:client-id "commit"
                                     :mode :versioned-premise})
     (runtime/commit-version!
      session {:commit-id "00000000-0000-0000-0000-000000000011"
               :client-id "commit" :index 0 :expected-version nil
-              :text "(def-net f [x] [out] (-> (+ x 1) out))"})
+              :text "(define f (network [x out] (-> (+ x 1) out) (list out)))"})
     (runtime/commit-version!
      session {:commit-id "00000000-0000-0000-0000-000000000012"
               :client-id "commit" :index 0 :expected-version 0
-              :text "(def-net f [x] [out] (-> (+ x 10) out))"})
+              :text "(define f (network [x out] (-> (+ x 10) out) (list out)))"})
     (let [result (environment-io/save-state
                   @session {:file (.getPath file)
                             :mode :commit-supported
@@ -164,22 +166,22 @@
                             :checkpoint-id "commit-1"
                             :client-id "commit"})]
       (is (= :saved (get-in result [:receipt :status])))
-      (is (= ['(def-net f [x] [out] (-> (+ x 10) out))]
+      (is (= ['(define f (network [x out] (-> (+ x 10) out) (list out)))]
              (environment-io/lain-forms (slurp file)))))))
 
 (deftest preserve-export-keeps-private-candidate-source-and-reports-gap
-  (let [session (assembly/new-session)
+  (let [session (runtime/new-session)
         file (temp-file ".lain")]
     (runtime/register-tui! session {:client-id "preserve"
                                     :mode :versioned-premise})
     (runtime/commit-version!
      session {:commit-id "00000000-0000-0000-0000-000000000021"
               :client-id "preserve" :index 0 :expected-version nil
-              :text "(def x 1)"})
+              :text "(define x 1)"})
     (runtime/commit-version!
      session {:commit-id "00000000-0000-0000-0000-000000000022"
               :client-id "preserve" :index 0 :expected-version 0
-              :text "(def x 2)"})
+              :text "(define x 2)"})
     (let [result (environment-io/save-state
                   @session {:file (.getPath file)
                             :mode :preserve-premises
@@ -189,6 +191,6 @@
           forms (environment-io/lain-forms (slurp file))]
       (is (= :saved (get-in result [:receipt :status])))
       (is (= 3 (count forms)))
-      (is (= '(def x 2) (last forms)))
+      (is (= '(define x 2) (last forms)))
       (is (= :preserved-candidates-archived
              (get-in result [:receipt :diagnostics 0 :warning]))))))

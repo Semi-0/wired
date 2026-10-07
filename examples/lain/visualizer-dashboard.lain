@@ -1,12 +1,13 @@
-(def-cells source result references hierarchy-view value-view history-view dashboard)
-
+(define source)
+(define result)
+(define references)
+(define hierarchy-view)
+(define value-view)
+(define history-view)
+(define dashboard)
 (<-> 1 source)
-
-(def-net increment [x] [out]
-  (-> (+ x 1) out))
-
+(define increment (network [x out] (-> (+ x 1) out) (list out)))
 (increment source result)
-
 (propagator-references result :inputs references)
 (hierarchy references hierarchy-view)
 (cell-window result value-view)
