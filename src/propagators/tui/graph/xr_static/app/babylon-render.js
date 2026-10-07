@@ -3,6 +3,7 @@ import { createBabylonGraphView } from "./babylon-graph-view.js";
 import { createBabylonInput } from "./babylon-input.js";
 import { createBabylonViewLayer } from "./babylon-views.js";
 import { flattenViewPlanes } from "./views.js";
+import { configureCameraMode } from "./camera-mode.js";
 
 const requireBabylon = () => {
   if (!window.BABYLON) {
@@ -78,19 +79,11 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     cameraMode = nextMode;
     framedGraphKey = "";
     input.interaction.userAdjusted = false;
+    configureCameraMode(BABYLON, camera, canvas, nextMode);
     if (nextMode === "2d") {
-      camera.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
-      camera.alpha = Math.PI / 2;
-      camera.beta = Math.PI / 2;
-      camera.lowerBetaLimit = Math.PI / 2;
-      camera.upperBetaLimit = Math.PI / 2;
       updateOrthographicBounds();
     } else {
-      camera.mode = BABYLON.Camera.PERSPECTIVE_CAMERA;
-      camera.lowerBetaLimit = 0.01;
-      camera.upperBetaLimit = Math.PI - 0.01;
-      camera.alpha = -Math.PI / 3;
-      camera.beta = Math.PI / 3;
+      // Perspective framing uses the existing camera radius.
     }
   };
 

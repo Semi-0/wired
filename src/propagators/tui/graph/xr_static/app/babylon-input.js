@@ -56,7 +56,7 @@ export const createBabylonInput = ({ BABYLON, scene, canvas, graphView, dispatch
     if (type === BABYLON.PointerEventTypes.POINTERDOWN) {
       const mesh = selectedMesh(pickInfo);
       const node = nodeById(mesh?.metadata?.nodeId);
-      if (isWidget(node)) {
+      if (node && isWidget(node)) {
         const local = localPoint(BABYLON, mesh, pickInfo.pickedPoint);
         const channel = widgetChannelForLocalPoint(node, local)?.channel || "value";
         interaction.widgetDrag = node.id;
