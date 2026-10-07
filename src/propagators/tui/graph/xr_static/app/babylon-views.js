@@ -3,6 +3,7 @@ import { Msg } from "./msg.js";
 import { forceCardPositions, cardZoom } from "./card-layout.js";
 import { placeCardLabels } from "./card-labels.js";
 import { drawArrow, drawNode } from "./card-symbols.js";
+import { viewLayout } from "./view-layout.js";
 
 const panelSize = { width: 3.2, height: 2.1 };
 const textureSize = { width: 768, height: 504 };
@@ -213,10 +214,10 @@ export const createBabylonViewLayer = ({ BABYLON, scene, dispatch }) => {
     }
   };
 
-  const renderViews = (model) => {
+  const renderViews = (model, width, height) => {
     const views = flattenViewPlanes(model.views);
     prune(new Set(views.map((view) => view.id)));
-    const center = (views.length - 1) / 2;
+    const positions = viewLayout(views.length, model.viewMode, width, height);
     views.forEach((view, index) => {
       const panel = panels.get(view.id) || createPanel(view);
       const fingerprint = viewFingerprint(view);
@@ -233,7 +234,8 @@ export const createBabylonViewLayer = ({ BABYLON, scene, dispatch }) => {
         panel.plane.isPickable = true;
         panel.fingerprint = fingerprint;
       }
-      panel.plane.position.set((index - center) * 3.55, 0, 0);
+      const position = positions[index];
+      panel.plane.position.set(position.x, position.y, position.z);
     });
   };
 

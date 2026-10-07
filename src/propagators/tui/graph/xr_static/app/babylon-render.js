@@ -4,6 +4,7 @@ import { createBabylonInput } from "./babylon-input.js";
 import { createBabylonViewLayer } from "./babylon-views.js";
 import { flattenViewPlanes } from "./views.js";
 import { configureCameraMode } from "./camera-mode.js";
+import { viewLayout, planarFramingRadius } from "./view-layout.js";
 
 const requireBabylon = () => {
   if (!window.BABYLON) {
@@ -94,11 +95,13 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
       .map((node) => model.layout[node.id])
       .filter(Boolean)
       .map((p) => new BABYLON.Vector3(p.x, p.y, model.viewMode === "2d" ? 0 : p.z));
-    const cards = flattenViewPlanes(model.views).length;
-    if (cards > 0) {
-      const extent = (cards - 1) * 3.55 / 2 + 1.6;
-      points.push(new BABYLON.Vector3(-extent, -1.05, 0),
-        new BABYLON.Vector3(extent, 1.05, 0));
+    const cards = viewLayout(flattenViewPlanes(model.views).length,
+      model.viewMode, engine.getRenderWidth(), engine.getRenderHeight());
+    if (cards.length > 0) {
+      for (const card of cards) {
+        points.push(new BABYLON.Vector3(card.x - 1.6, card.y - 1.05, 0),
+          new BABYLON.Vector3(card.x + 1.6, card.y + 1.05, 0));
+      }
       if (model.graph.nodes.length === 0) {
         camera.alpha = -Math.PI / 2;
         camera.beta = Math.PI / 2;
@@ -110,8 +113,13 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     const center = min.add(max).scale(0.5);
     const radius = Math.max(max.subtract(min).length() * 1.05, 4.5);
     camera.target.copyFrom(center);
-    camera.radius = viewportFramingRadius(radius, engine.getRenderWidth(), engine.getRenderHeight());
-    if (model.viewMode === "2d") updateOrthographicBounds();
+    if (model.viewMode === "2d") {
+      camera.radius = planarFramingRadius(max.x - min.x, max.y - min.y,
+        engine.getRenderWidth(), engine.getRenderHeight());
+      updateOrthographicBounds();
+    } else {
+      camera.radius = viewportFramingRadius(radius, engine.getRenderWidth(), engine.getRenderHeight());
+    }
     framedGraphKey = key;
   };
 
@@ -146,7 +154,7 @@ export const createRenderer = ({ root, selectionEl, dispatch }) => {
     applyCameraMode(model.viewMode);
     frameGraph(model);
     graphView.renderGraph(model);
-    viewLayer.renderViews(model);
+    viewLayer.renderViews(model, engine.getRenderWidth(), engine.getRenderHeight());
     const selected = selectedNode(model);
     selectionEl.textContent = selected ? JSON.stringify(selected, null, 2) : "no selection";
     key.position.copyFrom(camera.position);

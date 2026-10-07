@@ -66,6 +66,13 @@ The server binds loopback by default. Use the collection buttons in the sidebar,
 or the mobile **Views** menu. The server watches `chain.lain`; a successful
 external edit recompiles and replaces the entire environment. Stop with Ctrl-C.
 
+In 2D, collection cards use a screen-shaped grid, and camera framing uses the
+same card positions. The previous horizontal row reduced the initial cards to
+a nearly invisible strip on phones. Verification now includes a fresh page
+without installing a trace, portrait and landscape fitting, and switching modes.
+The separate trace graph remains empty until a trace is installed; changing the
+view mode does not create a trace.
+
 An alternative file and port may be passed as positional arguments:
 
 ```sh
