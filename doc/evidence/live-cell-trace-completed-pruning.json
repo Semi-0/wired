@@ -1,0 +1,112 @@
+{
+  "surviving-activation-identity": true,
+  "dictionary-unchanged": true,
+  "original-session-unchanged": true,
+  "cells-unchanged": true,
+  "optimization-ms": 211.258667,
+  "limitations": [
+    "Preserves persistent GUR completion markers; does not support clearing them or rollback to pre-declaration state.",
+    "No TTMS premise replacement benchmark; conflicting and condition evidence checked.",
+    "Retired ownership controls are subsumed to their original surviving ancestors."
+  ],
+  "trace-checks": [
+    {
+      "mode": "semantic-chain",
+      "equal": false,
+      "graph-equal": true,
+      "before-nodes": 6,
+      "after-nodes": 6,
+      "before-edges": 16,
+      "after-edges": 16
+    },
+    {
+      "mode": "semantic-chain",
+      "equal": false,
+      "graph-equal": true,
+      "before-nodes": 6,
+      "after-nodes": 6,
+      "before-edges": 16,
+      "after-edges": 16
+    },
+    {
+      "mode": "chain",
+      "equal": false,
+      "graph-equal": true,
+      "before-nodes": 601,
+      "after-nodes": 601,
+      "before-edges": 1161,
+      "after-edges": 1161
+    }
+  ],
+  "verification": [
+    {
+      "case": "reactivation",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 193.09875
+    },
+    {
+      "case": "same-input",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 192.532166
+    },
+    {
+      "case": "conflicting-input",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 181.362459
+    },
+    {
+      "case": "condition-nothing",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 183.801666
+    },
+    {
+      "case": "condition-false",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 184.793542
+    },
+    {
+      "case": "condition-contradiction",
+      "cells-equal": true,
+      "dictionary-equal": true,
+      "result-equal": true,
+      "no-growth": true,
+      "milliseconds": 179.786458
+    }
+  ],
+  "surviving-ownership-ancestors-preserved": true,
+  "after": {
+    "cells": 405,
+    "propagators": 350
+  },
+  "removed-count": 13,
+  "late-availability": {
+    "waiting-control-retained": true,
+    "late-answer": 9,
+    "cells-equal": true,
+    "milliseconds": 338.143375
+  },
+  "validation-path": "trusted-completed-when-experiment",
+  "before": {
+    "cells": 405,
+    "propagators": 363
+  },
+  "source": "examples/lain/live-cell-traces.lain",
+  "working_tree_changes": true,
+  "external_effect_execution": false,
+  "live_lan_session_replaced": false
+}
